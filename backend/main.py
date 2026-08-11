@@ -1,5 +1,13 @@
 from fastapi import FastAPI
 
+from backend.app.api.incidents import router as incidents_router
+from backend.app.core.database import Base, engine
+from backend.app.models import incident
+
+
+Base.metadata.create_all(bind=engine)
+
+
 app = FastAPI(
     title="FactoryOps AI API",
     description="제조 장애 대응 및 지식 검색 API",
@@ -8,5 +16,8 @@ app = FastAPI(
 
 
 @app.get("/health")
-def health_check():
+def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+app.include_router(incidents_router)
