@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
@@ -7,7 +7,9 @@ from backend.app.schemas.incident import (
     IncidentCreate,
     IncidentResponse,
 )
+from backend.app.schemas.vector_search import VectorSearchResult
 from backend.app.services.incident_service import IncidentService
+from backend.app.services.vector_search_service import VectorSearchService
 
 
 router = APIRouter(
@@ -51,6 +53,26 @@ def search_incidents(
     return IncidentService.search_incidents(
         db,
         keyword,
+    )
+
+
+@router.get(
+    "/vector-search",
+    response_model=list[VectorSearchResult],
+)
+def vector_search_incidents(
+    query: str,
+    top_k: int = Query(
+        default=3,
+        ge=1,
+        le=10,
+    ),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    return VectorSearchService.search(
+        db,
+        query,
+        top_k,
     )
 
 

@@ -103,3 +103,79 @@ def test_keyword_search_cannot_understand_semantics():
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_vector_search_finds_semantically_similar_incident():
+    client.post("/admin/seed")
+
+    response = client.get(
+        "/incidents/vector-search",
+        params={
+            "query": "장비가 너무 뜨거워졌어",
+            "top_k": 3,
+        },
+    )
+
+    assert response.status_code == 200
+
+    results = response.json()
+
+    assert len(results) == 3
+    assert (
+        results[0]["incident"]["equipment_name"]
+        == "Conveyor-01"
+    )
+    assert results[0]["similarity"] > 0
+
+
+def test_vector_search_respects_top_k():
+    client.post("/admin/seed")
+
+    response = client.get(
+        "/incidents/vector-search",
+        params={
+            "query": "카메라 영상 문제",
+            "top_k": 2,
+        },
+    )
+
+    assert response.status_code == 200
+
+    results = response.json()
+
+    assert len(results) == 2
+
+
+def test_vector_search_succeeds_where_keyword_search_fails():
+    client.post("/admin/seed")
+
+    query = "장비가 너무 뜨거워졌어"
+
+    keyword_response = client.get(
+        "/incidents/search",
+        params={
+            "keyword": query,
+        },
+    )
+
+    vector_response = client.get(
+        "/incidents/vector-search",
+        params={
+            "query": query,
+            "top_k": 3,
+        },
+    )
+
+    assert keyword_response.status_code == 200
+    assert vector_response.status_code == 200
+
+    keyword_results = keyword_response.json()
+    vector_results = vector_response.json()
+
+    assert keyword_results == []
+    assert len(vector_results) == 3
+
+    assert (
+        vector_results[0]["incident"]["equipment_name"]
+        == "Conveyor-01"
+    )
