@@ -41,6 +41,20 @@ def get_incidents(
 
 
 @router.get(
+    "/search",
+    response_model=list[IncidentResponse],
+)
+def search_incidents(
+    keyword: str,
+    db: Session = Depends(get_db),
+) -> list[Incident]:
+    return IncidentService.search_incidents(
+        db,
+        keyword,
+    )
+
+
+@router.get(
     "/{incident_id}",
     response_model=IncidentResponse,
 )
