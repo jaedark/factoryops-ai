@@ -10,6 +10,8 @@ class VectorSearchService:
     def _build_incident_text(
         incident: Incident,
     ) -> str:
+        # Turn the structured incident record into one text block
+        # so the embedding model can compare it with the query.
         return (
             f"Equipment: {incident.equipment_name}\n"
             f"Process: {incident.process_name}\n"
@@ -36,6 +38,8 @@ class VectorSearchService:
         results = []
 
         for incident in incidents:
+            # Score every incident independently against the same
+            # query vector, then sort the full result list.
             incident_text = cls._build_incident_text(
                 incident
             )
@@ -63,4 +67,6 @@ class VectorSearchService:
             reverse=True,
         )
 
+        # This service is a retriever, so it only returns the
+        # highest-similarity shortlist requested by top_k.
         return results[:top_k]

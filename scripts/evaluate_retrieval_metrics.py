@@ -123,6 +123,8 @@ def evaluate_cases(db, cases, label: str):
         query = case["query"]
         expected = case["expected_equipment"]
 
+        # This baseline script compares retrievers directly
+        # without any reranking stage.
         vector_results = VectorSearchService.search(
             db=db,
             query=query,

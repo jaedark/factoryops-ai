@@ -3,6 +3,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 
 class EmbeddingService:
+    # Reuse one multilingual encoder for every vector-search call
+    # so the app does not pay model load cost repeatedly.
     _model = SentenceTransformer(
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
@@ -19,6 +21,8 @@ class EmbeddingService:
         vector_a,
         vector_b,
     ) -> float:
+        # Retrieval ranking is driven by cosine similarity between
+        # the query embedding and each incident embedding.
         similarity = cosine_similarity(
             [vector_a],
             [vector_b],

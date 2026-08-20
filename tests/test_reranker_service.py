@@ -12,6 +12,8 @@ class FakeRerankerModel:
         self.scores = scores
 
     def predict(self, pairs):
+        # Mirror the real CrossEncoder interface while keeping
+        # tests deterministic and offline.
         assert len(pairs) == len(self.scores)
 
         return self.scores
@@ -85,6 +87,8 @@ def test_rerank_candidates_adds_rerank_score():
         original_get_model = RerankerService.get_model
 
         try:
+            # Patch model loading so this test verifies the
+            # result-shaping logic without touching Hugging Face.
             RerankerService.get_model = classmethod(
                 lambda cls: FakeRerankerModel(
                     scores=[0.2, 0.8, 0.5]

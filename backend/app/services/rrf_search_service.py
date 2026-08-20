@@ -26,6 +26,8 @@ class RrfSearchService:
         if not incidents:
             return []
 
+        # RRF needs full ranked lists from each retriever, so the
+        # vector side is expanded to all incidents first.
         vector_results = VectorSearchService.search(
             db=db,
             query=query,
@@ -35,6 +37,8 @@ class RrfSearchService:
         keyword_results = []
 
         for incident in incidents:
+            # Reuse the keyword scoring logic from hybrid search
+            # to build the lexical ranking list for fusion.
             keyword_score = (
                 HybridSearchService._calculate_keyword_score(
                     query=query,
@@ -74,6 +78,8 @@ class RrfSearchService:
             )
 
             scores[incident.incident_id]["keyword_rank"] = rank
+            # Reciprocal Rank Fusion gives higher reward to items
+            # appearing near the top of each ranking list.
             scores[incident.incident_id]["rrf_score"] += (
                 1 / (rrf_k + rank)
             )

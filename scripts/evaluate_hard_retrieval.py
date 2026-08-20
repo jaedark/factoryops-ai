@@ -61,6 +61,9 @@ HARD_EVALUATION_CASES = [
 ]
 
 
+# These were the failure patterns called out from the
+# earlier hard-evaluation baseline and are tracked again
+# after reranking for direct before/after comparison.
 FOCUS_FAILURE_QUERIES = [
     "계속 고장난 건 아닌데 가끔 센서 입력이 아예 안 잡혀",
     "검사 결과가 자꾸 빗나가서 불량 판정 정확도가 떨어졌어",
@@ -160,6 +163,8 @@ def get_vector_rerank_results(
     db,
     query: str,
 ) -> list[dict]:
+    # Rerank only the retriever shortlist; this keeps the
+    # experiment focused on ranking quality, not recall.
     vector_candidates = VectorSearchService.search(
         db=db,
         query=query,
@@ -177,6 +182,8 @@ def get_rrf_rerank_results(
     db,
     query: str,
 ) -> list[dict]:
+    # Use the same shortlist size for RRF so the reranker
+    # comparison stays fair across retrieval strategies.
     rrf_candidates = RrfSearchService.search(
         db=db,
         query=query,
@@ -263,6 +270,8 @@ def summarize_method(
     return {
         "label": label,
         "metrics": metrics,
+        # Store per-query detail so later sections can compare
+        # before/after ranks without re-running retrieval.
         "per_query": per_query,
     }
 
@@ -365,6 +374,8 @@ def main():
 
     try:
         model_started_at = perf_counter()
+        # Warm the model before the timed evaluation so we can
+        # report load cost separately from ranking cost.
         RerankerService.get_model()
         model_total_elapsed = (
             perf_counter() - model_started_at

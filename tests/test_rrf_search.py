@@ -8,6 +8,8 @@ def test_rrf_search_exact_equipment_name():
     db = SessionLocal()
 
     try:
+        # Exact equipment-name queries should be dominated by
+        # the keyword side of the fused ranking.
         results = RrfSearchService.search(
             db=db,
             query="Conveyor-01",
@@ -31,9 +33,11 @@ def test_rrf_search_combines_keyword_and_vector_rank():
     db = SessionLocal()
 
     try:
+        # A natural-language issue query should still rank the
+        # correct incident first after fusion.
         results = RrfSearchService.search(
             db=db,
-            query="Robot-01 위치 문제",
+            query="Robot-01 ?꾩튂 臾몄젣",
             top_k=3,
         )
 

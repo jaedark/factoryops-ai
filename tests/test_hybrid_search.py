@@ -9,6 +9,8 @@ def test_hybrid_search_exact_equipment_name():
     db = SessionLocal()
 
     try:
+        # Exact equipment queries should produce a full keyword
+        # score even when vector similarity is also present.
         results = HybridSearchService.search(
             db=db,
             query="Conveyor-01",
@@ -33,9 +35,11 @@ def test_hybrid_search_equipment_with_natural_language():
     db = SessionLocal()
 
     try:
+        # This checks that keyword matching still helps when the
+        # query mixes equipment id and natural-language symptoms.
         results = HybridSearchService.search(
             db=db,
-            query="Robot-01 위치 문제",
+            query="Robot-01 ?꾩튂 臾몄젣",
             top_k=3,
         )
 

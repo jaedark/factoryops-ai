@@ -18,6 +18,8 @@ class RerankerService:
     def get_model(cls):
         if cls._shared_model is None:
             started_at = perf_counter()
+            # Load once and reuse the same CrossEncoder instance
+            # across rerank calls in this process.
             cls._shared_model = CrossEncoder(
                 RERANKER_MODEL_NAME
             )
@@ -37,6 +39,8 @@ class RerankerService:
     def build_rerank_text(candidate) -> str:
         incident = candidate["incident"]
 
+        # CrossEncoder scores a single query-document pair,
+        # so flatten the incident into one readable document.
         return (
             f"Equipment: {incident.equipment_name}\n"
             f"Process: {incident.process_name}\n"
@@ -63,6 +67,8 @@ class RerankerService:
 
         scores = self.model.predict(pairs)
 
+        # Keep the original candidate payload and only replace
+        # ordering based on the CrossEncoder score.
         ranked = sorted(
             zip(candidates, scores),
             key=lambda x: x[1],
@@ -89,6 +95,8 @@ class RerankerService:
 
         for candidate, score in ranked:
             result = dict(candidate)
+            # Persist the rerank score for evaluation output
+            # without mutating the source search result object.
             result["rerank_score"] = float(score)
             reranked_results.append(result)
 
