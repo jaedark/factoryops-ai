@@ -33,31 +33,43 @@ EVALUATION_CASES = [
 
 HARD_EVALUATION_CASES = [
     {
-        "query": "컨베이어가 갑자기 멈췄어",
-        "expected_equipment": "Conveyor-02",
+        "query": "모터 쪽 열이 계속 올라가는데 냉각 계통부터 봐야 할까?",
+        "expected_equipment": "Conveyor-01",
     },
     {
-        "query": "검사 정확도가 자꾸 떨어져",
-        "expected_equipment": "Vision-02",
+        "query": "로봇이 명령한 위치랑 실제 움직이는 위치가 계속 달라",
+        "expected_equipment": "Robot-01",
     },
     {
-        "query": "PLC랑 통신이 안돼",
-        "expected_equipment": "PLC-01",
-    },
-    {
-        "query": "로봇 서보 알람이 났어",
-        "expected_equipment": "Robot-02",
-    },
-    {
-        "query": "제품이 가끔 감지가 안돼",
-        "expected_equipment": "Sensor-03",
-    },
-    {
-        "query": "센서 신호가 아예 안 잡혀",
+        "query": "계속 고장난 건 아닌데 가끔 센서 입력이 빠져",
         "expected_equipment": "Sensor-05",
     },
     {
-        "query": "영상 검사 결과가 예전보다 부정확해졌어",
+        "query": "카메라 전원은 살아있는 것 같은데 영상이 안 들어와",
+        "expected_equipment": "Vision-02",
+    },
+    {
+        "query": "컨베이어가 갑자기 멈추고 다시 켜도 반응이 없어",
+        "expected_equipment": "Conveyor-02",
+    },
+    {
+        "query": "검사 결과가 자꾸 틀리는데 비전 쪽 정확도가 떨어진 것 같아",
+        "expected_equipment": "Vision-02",
+    },
+    {
+        "query": "PLC랑 통신이 자꾸 끊겨서 설비 상태를 못 읽어와",
+        "expected_equipment": "PLC-01",
+    },
+    {
+        "query": "서보 알람이 떠서 로봇 축이 제대로 안 돈다",
+        "expected_equipment": "Robot-02",
+    },
+    {
+        "query": "제품이 지나가도 검출이 들쭉날쭉해서 누락이 생겨",
+        "expected_equipment": "Sensor-03",
+    },
+    {
+        "query": "영상 검사 결과가 예전보다 부정확하고 판정이 흔들려",
         "expected_equipment": "Vision-02",
     },
 ]
