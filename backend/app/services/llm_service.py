@@ -2,6 +2,7 @@ import os
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
 
 load_dotenv()
@@ -18,9 +19,20 @@ class LlmService:
     )
 
     @classmethod
-    def generate(cls, prompt: str) -> str:
-        response = cls._client.models.generate_content(
+    def generate_content(
+        cls,
+        contents,
+        config: types.GenerateContentConfig | None = None,
+    ):
+        return cls._client.models.generate_content(
             model=cls._model,
+            contents=contents,
+            config=config,
+        )
+
+    @classmethod
+    def generate(cls, prompt: str) -> str:
+        response = cls.generate_content(
             contents=prompt,
         )
 

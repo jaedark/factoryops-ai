@@ -38,6 +38,16 @@ class IncidentService:
         )
 
     @staticmethod
+    def get_equipment_incidents(
+        db: Session,
+        equipment_name: str,
+    ) -> list[Incident]:
+        return IncidentRepository.get_by_equipment_name(
+            db,
+            equipment_name,
+        )
+
+    @staticmethod
     def search_incidents(
         db: Session,
         keyword: str,

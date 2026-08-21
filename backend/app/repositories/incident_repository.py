@@ -36,6 +36,20 @@ class IncidentRepository:
         )
 
     @staticmethod
+    def get_by_equipment_name(
+        db: Session,
+        equipment_name: str,
+    ) -> list[Incident]:
+        return (
+            db.query(Incident)
+            .filter(
+                Incident.equipment_name == equipment_name
+            )
+            .order_by(Incident.occurred_at.desc())
+            .all()
+        )
+
+    @staticmethod
     def get_by_equipment_and_occurred_at(
         db: Session,
         equipment_name: str,

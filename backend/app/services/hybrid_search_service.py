@@ -19,7 +19,7 @@ class HybridSearchService:
         # Keep tokenization simple but compatible with both
         # equipment ids and Korean natural-language phrases.
         return re.findall(
-            r"[a-zA-Z0-9_-]+|[媛-??+",
+            r"[a-zA-Z0-9_-]+|[\uac00-\ud7a3]+",
             text.lower(),
         )
 

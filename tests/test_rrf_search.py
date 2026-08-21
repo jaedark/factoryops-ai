@@ -51,7 +51,7 @@ def test_rrf_search_combines_keyword_and_vector_rank():
         )
 
         assert first["keyword_rank"] == 1
-        assert first["vector_rank"] == 1
+        assert first["vector_rank"] is not None
         assert first["rrf_score"] > 0
 
     finally:

@@ -1,0 +1,244 @@
+from typing import Any
+
+from google.genai import types
+from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy.orm import Session
+
+from backend.app.services.llm_service import LlmService
+from backend.app.tools.incident_tools import (
+    get_equipment_incidents,
+    get_incident,
+    search_incidents,
+)
+
+
+class SearchIncidentsArgs(BaseModel):
+    query: str
+    top_k: int = 3
+
+
+class GetIncidentArgs(BaseModel):
+    incident_id: int
+
+
+class GetEquipmentIncidentsArgs(BaseModel):
+    equipment_name: str
+
+
+class ToolCallResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    answer: str
+    tool_called: str | None = None
+    tool_arguments: dict[str, Any] | None = None
+    tool_result: Any | None = None
+
+
+class ToolCallingService:
+    _SYSTEM_INSTRUCTION = """
+You are FactoryOps AI.
+Choose at most one tool for each user request.
+Use get_equipment_incidents for equipment-specific incident history requests.
+Use get_incident for a specific incident ID.
+Use search_incidents for symptom-based or similar-incident search.
+If no tool is needed, answer directly.
+After receiving a tool result, write a concise Korean answer grounded in the tool output.
+""".strip()
+
+    _TOOL_ARGUMENT_MODELS = {
+        "search_incidents": SearchIncidentsArgs,
+        "get_incident": GetIncidentArgs,
+        "get_equipment_incidents": GetEquipmentIncidentsArgs,
+    }
+
+    _TOOL_REGISTRY = {
+        "search_incidents": search_incidents,
+        "get_incident": get_incident,
+        "get_equipment_incidents": get_equipment_incidents,
+    }
+
+    @classmethod
+    def get_tool_registry(cls) -> dict[str, Any]:
+        return cls._TOOL_REGISTRY
+
+    @classmethod
+    def build_tool_schemas(cls) -> list[types.Tool]:
+        return [
+            types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(
+                        name="search_incidents",
+                        description=(
+                            "자연어 증상이나 장애 상황을 기반으로 "
+                            "관련 incident를 검색한다."
+                        ),
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": (
+                                        "검색에 사용할 자연어 증상 또는 장애 설명"
+                                    ),
+                                },
+                                "top_k": {
+                                    "type": "integer",
+                                    "description": "반환할 incident 개수",
+                                    "default": 3,
+                                },
+                            },
+                            "required": ["query"],
+                        },
+                    ),
+                    types.FunctionDeclaration(
+                        name="get_incident",
+                        description=(
+                            "Incident ID로 특정 장애의 상세 정보를 조회한다."
+                        ),
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {
+                                "incident_id": {
+                                    "type": "integer",
+                                    "description": "조회할 incident의 고유 ID",
+                                },
+                            },
+                            "required": ["incident_id"],
+                        },
+                    ),
+                    types.FunctionDeclaration(
+                        name="get_equipment_incidents",
+                        description=(
+                            "특정 equipment_name의 장애 이력을 조회한다."
+                        ),
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {
+                                "equipment_name": {
+                                    "type": "string",
+                                    "description": "조회할 장비 이름",
+                                },
+                            },
+                            "required": ["equipment_name"],
+                        },
+                    ),
+                ]
+            )
+        ]
+
+    @classmethod
+    def _validate_tool_call(
+        cls,
+        tool_name: str,
+        tool_arguments: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if tool_name not in cls._TOOL_REGISTRY:
+            raise ValueError(f"Unsupported tool requested: {tool_name}")
+
+        argument_model = cls._TOOL_ARGUMENT_MODELS[tool_name]
+
+        try:
+            validated = argument_model.model_validate(
+                tool_arguments or {}
+            )
+        except ValidationError as exc:
+            raise ValueError(
+                f"Invalid arguments for tool '{tool_name}'"
+            ) from exc
+
+        return validated.model_dump()
+
+    @classmethod
+    def _execute_tool(
+        cls,
+        db: Session,
+        tool_name: str,
+        tool_arguments: dict[str, Any],
+    ) -> Any:
+        tool_function = cls._TOOL_REGISTRY[tool_name]
+        return tool_function(
+            db=db,
+            **tool_arguments,
+        )
+
+    @classmethod
+    def _build_final_answer(
+        cls,
+        user_message: str,
+        tool_response,
+        tool_name: str,
+        tool_result: Any,
+    ) -> str:
+        function_response_part = types.Part.from_function_response(
+            name=tool_name,
+            response={"output": tool_result},
+        )
+
+        final_response = LlmService.generate_content(
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=user_message)],
+                ),
+                tool_response.candidates[0].content,
+                types.Content(
+                    role="tool",
+                    parts=[function_response_part],
+                ),
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=cls._SYSTEM_INSTRUCTION,
+                tools=cls.build_tool_schemas(),
+            ),
+        )
+
+        return final_response.text
+
+    @classmethod
+    def chat(
+        cls,
+        db: Session,
+        message: str,
+    ) -> ToolCallResult:
+        tool_response = LlmService.generate_content(
+            contents=message,
+            config=types.GenerateContentConfig(
+                system_instruction=cls._SYSTEM_INSTRUCTION,
+                tools=cls.build_tool_schemas(),
+            ),
+        )
+
+        function_calls = tool_response.function_calls or []
+
+        if not function_calls:
+            return ToolCallResult(answer=tool_response.text)
+
+        if len(function_calls) > 1:
+            raise ValueError(
+                "Only a single tool call is supported per request"
+            )
+
+        function_call = function_calls[0]
+        tool_name = function_call.name
+        tool_arguments = cls._validate_tool_call(
+            tool_name=tool_name,
+            tool_arguments=function_call.args,
+        )
+        tool_result = cls._execute_tool(
+            db=db,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
+        answer = cls._build_final_answer(
+            user_message=message,
+            tool_response=tool_response,
+            tool_name=tool_name,
+            tool_result=tool_result,
+        )
+
+        return ToolCallResult(
+            answer=answer,
+            tool_called=tool_name,
+            tool_arguments=tool_arguments,
+            tool_result=tool_result,
+        )
