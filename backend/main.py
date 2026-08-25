@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from backend.app.api.agent import router as agent_router
 from backend.app.api import rag
 from backend.app.api.admin import router as admin_router
 from backend.app.api.incidents import router as incidents_router
@@ -27,3 +28,4 @@ app.include_router(admin_router)
 app.include_router(incidents_router)
 app.include_router(rag.router)
 app.include_router(tools_router)
+app.include_router(agent_router)

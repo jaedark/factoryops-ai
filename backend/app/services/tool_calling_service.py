@@ -39,8 +39,8 @@ class ToolCallingService:
 You are FactoryOps AI.
 Choose at most one tool for each user request.
 Use get_equipment_incidents for equipment-specific incident history requests.
-Use get_incident for a specific incident ID.
 Use search_incidents for symptom-based or similar-incident search.
+Use get_incident for a specific incident ID or when you need to inspect one chosen incident in more detail after search results.
 If no tool is needed, answer directly.
 After receiving a tool result, write a concise Korean answer grounded in the tool output.
 """.strip()
@@ -62,6 +62,15 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         return cls._TOOL_REGISTRY
 
     @classmethod
+    def build_generation_config(
+        cls,
+    ) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            system_instruction=cls._SYSTEM_INSTRUCTION,
+            tools=cls.build_tool_schemas(),
+        )
+
+    @classmethod
     def build_tool_schemas(cls) -> list[types.Tool]:
         return [
             types.Tool(
@@ -70,7 +79,10 @@ After receiving a tool result, write a concise Korean answer grounded in the too
                         name="search_incidents",
                         description=(
                             "자연어 증상이나 장애 상황을 기반으로 "
-                            "관련 incident를 검색한다."
+                            "관련 incident 후보를 검색한다. "
+                            "반환 결과에는 incident_id가 포함되므로, "
+                            "가장 관련 있는 항목을 고른 뒤 "
+                            "추가 상세 확인이 필요하면 get_incident를 호출할 수 있다."
                         ),
                         parameters_json_schema={
                             "type": "object",
@@ -93,7 +105,10 @@ After receiving a tool result, write a concise Korean answer grounded in the too
                     types.FunctionDeclaration(
                         name="get_incident",
                         description=(
-                            "Incident ID로 특정 장애의 상세 정보를 조회한다."
+                            "Incident ID로 특정 장애의 상세 정보를 조회한다. "
+                            "검색 결과 중 하나를 선택한 뒤 원인, 조치, 결과를 "
+                            "다시 확인하거나 최종 답변 전에 단일 incident를 "
+                            "명확히 검증할 때 사용한다."
                         ),
                         parameters_json_schema={
                             "type": "object",
@@ -149,6 +164,17 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         return validated.model_dump()
 
     @classmethod
+    def validate_tool_call(
+        cls,
+        tool_name: str,
+        tool_arguments: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return cls._validate_tool_call(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
+
+    @classmethod
     def _execute_tool(
         cls,
         db: Session,
@@ -159,6 +185,19 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         return tool_function(
             db=db,
             **tool_arguments,
+        )
+
+    @classmethod
+    def execute_tool(
+        cls,
+        db: Session,
+        tool_name: str,
+        tool_arguments: dict[str, Any],
+    ) -> Any:
+        return cls._execute_tool(
+            db=db,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
         )
 
     @classmethod
@@ -182,14 +221,11 @@ After receiving a tool result, write a concise Korean answer grounded in the too
                 ),
                 tool_response.candidates[0].content,
                 types.Content(
-                    role="tool",
+                    role="user",
                     parts=[function_response_part],
                 ),
             ],
-            config=types.GenerateContentConfig(
-                system_instruction=cls._SYSTEM_INSTRUCTION,
-                tools=cls.build_tool_schemas(),
-            ),
+            config=cls.build_generation_config(),
         )
 
         return final_response.text
@@ -202,10 +238,7 @@ After receiving a tool result, write a concise Korean answer grounded in the too
     ) -> ToolCallResult:
         tool_response = LlmService.generate_content(
             contents=message,
-            config=types.GenerateContentConfig(
-                system_instruction=cls._SYSTEM_INSTRUCTION,
-                tools=cls.build_tool_schemas(),
-            ),
+            config=cls.build_generation_config(),
         )
 
         function_calls = tool_response.function_calls or []
@@ -220,11 +253,11 @@ After receiving a tool result, write a concise Korean answer grounded in the too
 
         function_call = function_calls[0]
         tool_name = function_call.name
-        tool_arguments = cls._validate_tool_call(
+        tool_arguments = cls.validate_tool_call(
             tool_name=tool_name,
             tool_arguments=function_call.args,
         )
-        tool_result = cls._execute_tool(
+        tool_result = cls.execute_tool(
             db=db,
             tool_name=tool_name,
             tool_arguments=tool_arguments,
