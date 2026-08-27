@@ -5,6 +5,11 @@ from fastapi.testclient import TestClient
 from google.genai import types
 
 from backend.main import app
+from backend.app.agents import (
+    INCIDENT_ANALYSIS_AGENT,
+    KNOWLEDGE_SEARCH_AGENT,
+    REPORT_AGENT,
+)
 from backend.app.services.tool_calling_service import (
     ToolCallingService,
 )
@@ -52,6 +57,65 @@ def test_build_tool_schemas_contains_three_tools():
 
     declarations = tools[0].function_declarations
     names = [declaration.name for declaration in declarations]
+
+    assert names == [
+        "search_incidents",
+        "get_incident",
+        "get_equipment_incidents",
+    ]
+
+
+def test_build_tool_schemas_none_returns_all_tools():
+    tools = ToolCallingService.build_tool_schemas(None)
+
+    assert len(tools) == 1
+
+    names = [
+        declaration.name
+        for declaration in tools[0].function_declarations
+    ]
+
+    assert names == [
+        "search_incidents",
+        "get_incident",
+        "get_equipment_incidents",
+    ]
+
+
+def test_build_tool_schemas_empty_returns_no_tools():
+    assert ToolCallingService.build_tool_schemas([]) == []
+
+
+def test_report_agent_generation_config_exposes_no_incident_tools():
+    config = ToolCallingService.build_generation_config(
+        system_instruction=REPORT_AGENT.system_instruction,
+        allowed_tools=REPORT_AGENT.allowed_tools,
+    )
+
+    assert config.tools == []
+
+
+def test_knowledge_search_agent_generation_config_exposes_no_tools():
+    config = ToolCallingService.build_generation_config(
+        system_instruction=KNOWLEDGE_SEARCH_AGENT.system_instruction,
+        allowed_tools=KNOWLEDGE_SEARCH_AGENT.allowed_tools,
+    )
+
+    assert config.tools == []
+
+
+def test_incident_analysis_agent_generation_config_exposes_three_tools():
+    config = ToolCallingService.build_generation_config(
+        system_instruction=INCIDENT_ANALYSIS_AGENT.system_instruction,
+        allowed_tools=INCIDENT_ANALYSIS_AGENT.allowed_tools,
+    )
+
+    assert len(config.tools) == 1
+
+    names = [
+        declaration.name
+        for declaration in config.tools[0].function_declarations
+    ]
 
     assert names == [
         "search_incidents",

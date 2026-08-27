@@ -80,7 +80,10 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         cls,
         allowed_tools: list[str] | None = None,
     ) -> list[types.Tool]:
-        selected_tools = set(allowed_tools or cls._TOOL_REGISTRY.keys())
+        if allowed_tools is None:
+            selected_tools = set(cls._TOOL_REGISTRY.keys())
+        else:
+            selected_tools = set(allowed_tools)
         declarations = []
 
         if "search_incidents" in selected_tools:
