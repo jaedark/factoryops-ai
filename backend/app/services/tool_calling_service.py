@@ -64,80 +64,105 @@ After receiving a tool result, write a concise Korean answer grounded in the too
     @classmethod
     def build_generation_config(
         cls,
+        system_instruction: str | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> types.GenerateContentConfig:
         return types.GenerateContentConfig(
-            system_instruction=cls._SYSTEM_INSTRUCTION,
-            tools=cls.build_tool_schemas(),
+            system_instruction=system_instruction
+            or cls._SYSTEM_INSTRUCTION,
+            tools=cls.build_tool_schemas(
+                allowed_tools=allowed_tools
+            ),
         )
 
     @classmethod
-    def build_tool_schemas(cls) -> list[types.Tool]:
+    def build_tool_schemas(
+        cls,
+        allowed_tools: list[str] | None = None,
+    ) -> list[types.Tool]:
+        selected_tools = set(allowed_tools or cls._TOOL_REGISTRY.keys())
+        declarations = []
+
+        if "search_incidents" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="search_incidents",
+                    description=(
+                        "자연어 증상이나 장애 상황을 기반으로 "
+                        "관련 incident 후보를 검색한다. "
+                        "반환 결과에는 incident_id가 포함되므로, "
+                        "가장 관련 있는 항목을 고른 뒤 "
+                        "추가 상세 확인이 필요하면 get_incident를 호출할 수 있다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "검색에 사용할 자연어 증상 또는 장애 설명"
+                                ),
+                            },
+                            "top_k": {
+                                "type": "integer",
+                                "description": "반환할 incident 개수",
+                                "default": 3,
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                )
+            )
+
+        if "get_incident" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="get_incident",
+                    description=(
+                        "Incident ID로 특정 장애의 상세 정보를 조회한다. "
+                        "검색 결과 중 하나를 선택한 뒤 원인, 조치, 결과를 "
+                        "다시 확인하거나 최종 답변 전에 단일 incident를 "
+                        "명확히 검증할 때 사용한다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "incident_id": {
+                                "type": "integer",
+                                "description": "조회할 incident의 고유 ID",
+                            },
+                        },
+                        "required": ["incident_id"],
+                    },
+                )
+            )
+
+        if "get_equipment_incidents" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="get_equipment_incidents",
+                    description=(
+                        "특정 equipment_name의 장애 이력을 조회한다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "equipment_name": {
+                                "type": "string",
+                                "description": "조회할 장비 이름",
+                            },
+                        },
+                        "required": ["equipment_name"],
+                    },
+                )
+            )
+
+        if not declarations:
+            return []
+
         return [
             types.Tool(
-                function_declarations=[
-                    types.FunctionDeclaration(
-                        name="search_incidents",
-                        description=(
-                            "자연어 증상이나 장애 상황을 기반으로 "
-                            "관련 incident 후보를 검색한다. "
-                            "반환 결과에는 incident_id가 포함되므로, "
-                            "가장 관련 있는 항목을 고른 뒤 "
-                            "추가 상세 확인이 필요하면 get_incident를 호출할 수 있다."
-                        ),
-                        parameters_json_schema={
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": (
-                                        "검색에 사용할 자연어 증상 또는 장애 설명"
-                                    ),
-                                },
-                                "top_k": {
-                                    "type": "integer",
-                                    "description": "반환할 incident 개수",
-                                    "default": 3,
-                                },
-                            },
-                            "required": ["query"],
-                        },
-                    ),
-                    types.FunctionDeclaration(
-                        name="get_incident",
-                        description=(
-                            "Incident ID로 특정 장애의 상세 정보를 조회한다. "
-                            "검색 결과 중 하나를 선택한 뒤 원인, 조치, 결과를 "
-                            "다시 확인하거나 최종 답변 전에 단일 incident를 "
-                            "명확히 검증할 때 사용한다."
-                        ),
-                        parameters_json_schema={
-                            "type": "object",
-                            "properties": {
-                                "incident_id": {
-                                    "type": "integer",
-                                    "description": "조회할 incident의 고유 ID",
-                                },
-                            },
-                            "required": ["incident_id"],
-                        },
-                    ),
-                    types.FunctionDeclaration(
-                        name="get_equipment_incidents",
-                        description=(
-                            "특정 equipment_name의 장애 이력을 조회한다."
-                        ),
-                        parameters_json_schema={
-                            "type": "object",
-                            "properties": {
-                                "equipment_name": {
-                                    "type": "string",
-                                    "description": "조회할 장비 이름",
-                                },
-                            },
-                            "required": ["equipment_name"],
-                        },
-                    ),
-                ]
+                function_declarations=declarations
             )
         ]
 

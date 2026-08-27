@@ -2,6 +2,8 @@ from google.genai import types
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.app.agents import INCIDENT_ANALYSIS_AGENT
+from backend.app.agents.base import AgentDefinition
 from backend.app.schemas.agent import (
     AgentState,
     AgentStatus,
@@ -89,16 +91,31 @@ class AgentService:
     def _get_tool_error_reason(
         error_message: str,
     ) -> AgentTerminationReason:
-        if "Unsupported tool requested" in error_message:
+        if (
+            "Unsupported tool requested" in error_message
+            or "Tool not allowed for agent" in error_message
+        ):
             return AgentTerminationReason.INVALID_TOOL
         if "Invalid arguments for tool" in error_message:
             return AgentTerminationReason.INVALID_ARGUMENTS
         return AgentTerminationReason.TOOL_ERROR
 
+    @staticmethod
+    def _validate_allowed_tool(
+        agent_definition: AgentDefinition,
+        tool_name: str,
+    ) -> None:
+        if tool_name not in agent_definition.allowed_tools:
+            raise ValueError(
+                "Tool not allowed for agent "
+                f"'{agent_definition.name}': {tool_name}"
+            )
+
     @classmethod
-    def chat(
+    def run(
         cls,
         db: Session,
+        agent_definition: AgentDefinition,
         message: str,
         max_steps: int = 5,
     ) -> AgentResult:
@@ -113,7 +130,12 @@ class AgentService:
             try:
                 response = LlmService.generate_content(
                     contents=state.conversation,
-                    config=ToolCallingService.build_generation_config(),
+                    config=ToolCallingService.build_generation_config(
+                        system_instruction=(
+                            agent_definition.system_instruction
+                        ),
+                        allowed_tools=agent_definition.allowed_tools,
+                    ),
                 )
             except Exception as exc:
                 state.status = AgentStatus.FAILED
@@ -157,6 +179,10 @@ class AgentService:
                 tool_arguments = ToolCallingService.validate_tool_call(
                     tool_name=tool_name,
                     tool_arguments=function_call.args,
+                )
+                cls._validate_allowed_tool(
+                    agent_definition=agent_definition,
+                    tool_name=tool_name,
                 )
                 tool_result = ToolCallingService.execute_tool(
                     db=db,
@@ -214,4 +240,18 @@ class AgentService:
         raise AgentExecutionError(
             error_message,
             state,
+        )
+
+    @classmethod
+    def chat(
+        cls,
+        db: Session,
+        message: str,
+        max_steps: int = 5,
+    ) -> AgentResult:
+        return cls.run(
+            db=db,
+            agent_definition=INCIDENT_ANALYSIS_AGENT,
+            message=message,
+            max_steps=max_steps,
         )
