@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from backend.app.agents import (
     INCIDENT_ANALYSIS_AGENT,
@@ -15,8 +16,17 @@ class FakeSession:
 
 
 class FakeAgentService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        outputs: dict[str, str] | None = None,
+    ) -> None:
         self.calls = []
+        self.outputs = outputs or {
+            "incident_analysis": "incident-output",
+            "knowledge_search": "knowledge-output",
+            "maintenance_recommendation": "maintenance-output",
+            "report": "report-output",
+        }
 
     def run(
         self,
@@ -33,11 +43,12 @@ class FakeAgentService:
                 "max_steps": max_steps,
             }
         )
-        return {
-            "agent_name": agent_definition.name,
-            "message": message,
-            "max_steps": max_steps,
-        }
+        return SimpleNamespace(
+            answer=self.outputs[agent_definition.name],
+            agent_name=agent_definition.name,
+            message=message,
+            max_steps=max_steps,
+        )
 
 
 def test_select_agent_routes_to_incident_analysis():
@@ -114,7 +125,7 @@ def test_run_passes_selected_agent_to_agent_service():
         )
     )
 
-    assert result["agent_name"] == "maintenance_recommendation"
+    assert result.agent_name == "maintenance_recommendation"
     assert len(fake_agent_service.calls) == 1
     assert (
         fake_agent_service.calls[0]["agent_definition"]
@@ -138,7 +149,7 @@ def test_run_uses_default_incident_analysis_agent():
         orchestrator.run("Conveyor 상태 확인해줘")
     )
 
-    assert result["agent_name"] == "incident_analysis"
+    assert result.agent_name == "incident_analysis"
     assert (
         fake_agent_service.calls[0]["agent_definition"]
         == INCIDENT_ANALYSIS_AGENT
@@ -297,3 +308,263 @@ def test_select_agent_and_execution_plan_have_different_roles():
         "incident_analysis",
         "maintenance_recommendation",
     ]
+
+
+def test_run_execution_plan_supports_single_agent_plan():
+    fake_agent_service = FakeAgentService(
+        outputs={"knowledge_search": "knowledge-output"}
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    result = asyncio.run(
+        orchestrator.run_execution_plan("PLC 점검 SOP 찾아줘")
+    )
+
+    assert result.plan.agents == ["knowledge_search"]
+    assert len(result.steps) == 1
+    assert result.steps[0].agent == "knowledge_search"
+    assert result.steps[0].output == "knowledge-output"
+    assert result.final_output == "knowledge-output"
+    assert len(fake_agent_service.calls) == 1
+
+
+def test_run_execution_plan_runs_agents_sequentially():
+    fake_agent_service = FakeAgentService()
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    result = asyncio.run(
+        orchestrator.run_execution_plan(
+            "Robot-01 장애 원인을 분석하고 예방 정비 방법 추천해줘"
+        )
+    )
+
+    assert result.plan.agents == [
+        "incident_analysis",
+        "maintenance_recommendation",
+    ]
+    assert [step.agent for step in result.steps] == [
+        "incident_analysis",
+        "maintenance_recommendation",
+    ]
+    assert [
+        call["agent_definition"].name
+        for call in fake_agent_service.calls
+    ] == [
+        "incident_analysis",
+        "maintenance_recommendation",
+    ]
+
+
+def test_run_execution_plan_propagates_previous_result():
+    fake_agent_service = FakeAgentService(
+        outputs={
+            "incident_analysis": "bearing wear detected",
+            "maintenance_recommendation": "replace bearing soon",
+        }
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+    message = "Robot-01 장애 원인을 분석하고 예방 정비 방법 추천해줘"
+
+    asyncio.run(orchestrator.run_execution_plan(message))
+
+    assert "bearing wear detected" in fake_agent_service.calls[1]["message"]
+
+
+def test_run_execution_plan_preserves_original_message():
+    fake_agent_service = FakeAgentService(
+        outputs={
+            "incident_analysis": "bearing wear detected",
+            "maintenance_recommendation": "replace bearing soon",
+        }
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+    message = "Robot-01 장애 원인을 분석하고 예방 정비 방법 추천해줘"
+
+    asyncio.run(orchestrator.run_execution_plan(message))
+
+    assert message in fake_agent_service.calls[1]["message"]
+
+
+def test_run_execution_plan_accumulates_three_agent_results():
+    fake_agent_service = FakeAgentService(
+        outputs={
+            "incident_analysis": "incident-result",
+            "knowledge_search": "knowledge-result",
+            "report": "report-output",
+        }
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    asyncio.run(
+        orchestrator.run_execution_plan(
+            "PLC 장애 원인을 분석하고 SOP를 찾아서 보고서로 정리해줘"
+        )
+    )
+
+    report_input = fake_agent_service.calls[2]["message"]
+
+    assert "incident-result" in report_input
+    assert "knowledge-result" in report_input
+
+
+def test_run_execution_plan_supports_full_four_agent_execution():
+    fake_agent_service = FakeAgentService()
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    result = asyncio.run(
+        orchestrator.run_execution_plan(
+            "장애 원인을 분석하고 관련 매뉴얼을 찾아서 예방 정비 방안을 보고서로 정리해줘"
+        )
+    )
+
+    assert result.plan.agents == [
+        "incident_analysis",
+        "knowledge_search",
+        "maintenance_recommendation",
+        "report",
+    ]
+    assert [step.agent for step in result.steps] == result.plan.agents
+
+
+def test_run_execution_plan_uses_last_agent_output_as_final_output():
+    fake_agent_service = FakeAgentService(
+        outputs={
+            "incident_analysis": "incident-output",
+            "knowledge_search": "knowledge-output",
+            "maintenance_recommendation": "maintenance-output",
+            "report": "final-report-output",
+        }
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    result = asyncio.run(
+        orchestrator.run_execution_plan(
+            "장애 원인을 분석하고 관련 매뉴얼을 찾아서 예방 정비 방안을 보고서로 정리해줘"
+        )
+    )
+
+    assert result.final_output == "final-report-output"
+
+
+def test_run_execution_plan_preserves_step_results():
+    fake_agent_service = FakeAgentService(
+        outputs={
+            "incident_analysis": "incident-output",
+            "maintenance_recommendation": "maintenance-output",
+        }
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    result = asyncio.run(
+        orchestrator.run_execution_plan(
+            "Robot-01 장애 원인을 분석하고 예방 정비 방법 추천해줘"
+        )
+    )
+
+    assert [
+        (step.agent, step.output)
+        for step in result.steps
+    ] == [
+        ("incident_analysis", "incident-output"),
+        (
+            "maintenance_recommendation",
+            "maintenance-output",
+        ),
+    ]
+
+
+def test_run_execution_plan_uses_build_execution_plan():
+    fake_agent_service = FakeAgentService()
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+
+    custom_plan = orchestrator.build_execution_plan(
+        "placeholder"
+    ).model_copy(
+        update={
+            "agents": [
+                "knowledge_search",
+                "report",
+            ]
+        }
+    )
+
+    original_build_execution_plan = (
+        orchestrator.build_execution_plan
+    )
+
+    try:
+        orchestrator.build_execution_plan = lambda _message: custom_plan
+        result = asyncio.run(
+            orchestrator.run_execution_plan(
+                "Robot-01 장애 원인을 분석하고 예방 정비 방법 추천해줘"
+            )
+        )
+    finally:
+        orchestrator.build_execution_plan = original_build_execution_plan
+
+    assert result.plan.agents == ["knowledge_search", "report"]
+    assert [
+        call["agent_definition"].name
+        for call in fake_agent_service.calls
+    ] == ["knowledge_search", "report"]
+
+
+def test_run_and_run_execution_plan_have_different_behavior():
+    fake_agent_service = FakeAgentService(
+        outputs={
+            "maintenance_recommendation": "maintenance-output",
+            "incident_analysis": "incident-output",
+        }
+    )
+    fake_session = FakeSession()
+    orchestrator = AgentOrchestrator(
+        fake_agent_service,
+        session_factory=lambda: fake_session,
+    )
+    message = "컨베이어 장애 원인을 분석하고 유지보수 방법 추천해줘"
+
+    single_result = asyncio.run(orchestrator.run(message))
+    multi_result = asyncio.run(orchestrator.run_execution_plan(message))
+
+    assert single_result.agent_name == "maintenance_recommendation"
+    assert multi_result.plan.agents == [
+        "incident_analysis",
+        "maintenance_recommendation",
+    ]
+    assert len(multi_result.steps) == 2

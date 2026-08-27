@@ -26,6 +26,18 @@ class AgentExecutionPlan(BaseModel):
     total_steps: int
 
 
+class AgentExecutionResult(BaseModel):
+    step: int
+    agent: str
+    output: str
+
+
+class MultiAgentExecutionResult(BaseModel):
+    plan: AgentExecutionPlan
+    steps: list[AgentExecutionResult]
+    final_output: str
+
+
 AGENT_INTENT_KEYWORDS = {
     INCIDENT_ANALYSIS_AGENT.name: [
         "장애",
@@ -181,6 +193,38 @@ class AgentOrchestrator:
             total_steps=len(steps),
         )
 
+    @staticmethod
+    def _extract_agent_output(
+        result,
+    ) -> str:
+        return result.answer or ""
+
+    @staticmethod
+    def _build_agent_input(
+        original_message: str,
+        previous_results: list[AgentExecutionResult],
+    ) -> str:
+        if not previous_results:
+            return original_message
+
+        previous_result_lines = [
+            "Original User Request:",
+            original_message,
+            "",
+            "Previous Agent Results (reference context):",
+        ]
+
+        for previous_result in previous_results:
+            previous_result_lines.extend(
+                [
+                    "",
+                    f"[{previous_result.agent}]",
+                    previous_result.output,
+                ]
+            )
+
+        return "\n".join(previous_result_lines)
+
     async def run(
         self,
         message: str,
@@ -199,6 +243,49 @@ class AgentOrchestrator:
             )
         finally:
             db.close()
+
+    async def run_execution_plan(
+        self,
+        message: str,
+        max_steps: int = 5,
+    ) -> MultiAgentExecutionResult:
+        plan = self.build_execution_plan(message)
+        db = self.session_factory()
+        execution_steps: list[AgentExecutionResult] = []
+
+        try:
+            for step_index, agent_name in enumerate(
+                plan.agents,
+                start=1,
+            ):
+                agent_definition = AGENT_REGISTRY[agent_name]
+                agent_input = self._build_agent_input(
+                    original_message=message,
+                    previous_results=execution_steps,
+                )
+                result = self.agent_service.run(
+                    db=db,
+                    agent_definition=agent_definition,
+                    message=agent_input,
+                    max_steps=max_steps,
+                )
+                execution_steps.append(
+                    AgentExecutionResult(
+                        step=step_index,
+                        agent=agent_name,
+                        output=self._extract_agent_output(result),
+                    )
+                )
+        finally:
+            db.close()
+
+        return MultiAgentExecutionResult(
+            plan=plan,
+            steps=execution_steps,
+            final_output=execution_steps[-1].output
+            if execution_steps
+            else "",
+        )
 
 
 DEFAULT_AGENT_ORCHESTRATOR = AgentOrchestrator(AgentService)
