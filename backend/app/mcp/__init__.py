@@ -1,4 +1,14 @@
-from backend.app.mcp.server import mcp_server
+from backend.app.mcp.client import (
+    MCPClientError,
+    MCPClientService,
+    MCPToolCallResult,
+    MCPToolDefinition,
+)
 
 
-__all__ = ["mcp_server"]
+__all__ = [
+    "MCPClientError",
+    "MCPClientService",
+    "MCPToolCallResult",
+    "MCPToolDefinition",
+]
