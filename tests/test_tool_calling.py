@@ -50,7 +50,7 @@ def _build_text_response(text: str):
     )
 
 
-def test_build_tool_schemas_contains_three_tools():
+def test_build_tool_schemas_contains_all_agentic_rag_tools():
     tools = ToolCallingService.build_tool_schemas()
 
     assert len(tools) == 1
@@ -62,6 +62,9 @@ def test_build_tool_schemas_contains_three_tools():
         "search_incidents",
         "get_incident",
         "get_equipment_incidents",
+        "get_equipment_status",
+        "get_equipment_telemetry",
+        "get_high_risk_equipment",
     ]
 
 
@@ -79,6 +82,9 @@ def test_build_tool_schemas_none_returns_all_tools():
         "search_incidents",
         "get_incident",
         "get_equipment_incidents",
+        "get_equipment_status",
+        "get_equipment_telemetry",
+        "get_high_risk_equipment",
     ]
 
 
@@ -104,7 +110,7 @@ def test_knowledge_search_agent_generation_config_exposes_no_tools():
     assert config.tools == []
 
 
-def test_incident_analysis_agent_generation_config_exposes_three_tools():
+def test_incident_analysis_agent_generation_config_exposes_incident_and_industrial_tools():
     config = ToolCallingService.build_generation_config(
         system_instruction=INCIDENT_ANALYSIS_AGENT.system_instruction,
         allowed_tools=INCIDENT_ANALYSIS_AGENT.allowed_tools,
@@ -121,7 +127,37 @@ def test_incident_analysis_agent_generation_config_exposes_three_tools():
         "search_incidents",
         "get_incident",
         "get_equipment_incidents",
+        "get_equipment_status",
+        "get_equipment_telemetry",
+        "get_high_risk_equipment",
     ]
+
+
+def test_industrial_tool_schemas_are_available():
+    tools = ToolCallingService.build_tool_schemas(
+        [
+            "get_equipment_status",
+            "get_equipment_telemetry",
+            "get_high_risk_equipment",
+        ]
+    )
+
+    declarations = tools[0].function_declarations
+    names = [declaration.name for declaration in declarations]
+
+    assert names == [
+        "get_equipment_status",
+        "get_equipment_telemetry",
+        "get_high_risk_equipment",
+    ]
+
+    status_schema = declarations[0].parameters_json_schema
+    telemetry_schema = declarations[1].parameters_json_schema
+    high_risk_schema = declarations[2].parameters_json_schema
+
+    assert status_schema["required"] == ["equipment_id"]
+    assert telemetry_schema["required"] == ["equipment_id"]
+    assert high_risk_schema["properties"] == {}
 
 
 def test_tool_chat_calls_get_equipment_incidents():

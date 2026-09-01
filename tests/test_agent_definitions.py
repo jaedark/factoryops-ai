@@ -52,6 +52,8 @@ def _build_text_response(text: str):
 def test_agent_definitions_are_configured():
     assert INCIDENT_ANALYSIS_AGENT.name == "incident_analysis"
     assert "search_incidents" in INCIDENT_ANALYSIS_AGENT.allowed_tools
+    assert "get_equipment_status" in INCIDENT_ANALYSIS_AGENT.allowed_tools
+    assert "get_high_risk_equipment" in INCIDENT_ANALYSIS_AGENT.allowed_tools
 
     assert KNOWLEDGE_SEARCH_AGENT.name == "knowledge_search"
     assert KNOWLEDGE_SEARCH_AGENT.allowed_tools == []
@@ -63,6 +65,9 @@ def test_agent_definitions_are_configured():
     assert MAINTENANCE_RECOMMENDATION_AGENT.allowed_tools == [
         "search_incidents",
         "get_incident",
+        "get_equipment_status",
+        "get_equipment_telemetry",
+        "get_high_risk_equipment",
     ]
 
     assert REPORT_AGENT.name == "report"
@@ -93,6 +98,32 @@ def test_incident_analysis_agent_allows_search_tool():
 
         assert result.status == "completed"
         assert result.steps[0].tool_called == "search_incidents"
+    finally:
+        db.close()
+
+
+def test_incident_analysis_agent_allows_industrial_tool():
+    db = SessionLocal()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            side_effect=[
+                _build_tool_response(
+                    "get_equipment_status",
+                    {"equipment_id": "Robot-01"},
+                ),
+                _build_text_response("현재 상태를 확인했습니다."),
+            ],
+        ):
+            result = AgentService.run(
+                db=db,
+                agent_definition=INCIDENT_ANALYSIS_AGENT,
+                message="Robot-01 현재 상태 알려줘",
+            )
+
+        assert result.status == "completed"
+        assert result.steps[0].tool_called == "get_equipment_status"
     finally:
         db.close()
 
@@ -138,22 +169,22 @@ def test_incident_analysis_agent_runs_multi_step_loop():
         db.close()
 
 
-def test_report_agent_blocks_incident_tools():
+def test_report_agent_blocks_industrial_tools():
     db = SessionLocal()
 
     try:
         with patch(
             "backend.app.services.agent_service.LlmService.generate_content",
             return_value=_build_tool_response(
-                "search_incidents",
-                {"query": "모터 과열", "top_k": 3},
+                "get_equipment_status",
+                {"equipment_id": "Robot-01"},
             ),
         ):
             try:
                 AgentService.run(
                     db=db,
                     agent_definition=REPORT_AGENT,
-                    message="보고서용으로 장애를 찾아줘",
+                    message="보고서용으로 현재 상태를 찾아줘",
                 )
                 assert False, "Expected AgentExecutionError"
             except AgentExecutionError as exc:

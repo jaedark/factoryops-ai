@@ -128,6 +128,110 @@ def test_agent_chat_runs_two_tools_then_returns_answer():
     assert data["answer"] == "Robot-01의 원인과 조치까지 확인했습니다."
 
 
+def test_agent_chat_runs_industrial_then_incident_tools():
+    client.post("/admin/seed")
+
+    with patch(
+        "backend.app.services.agent_service.LlmService.generate_content",
+        side_effect=[
+            _build_tool_response(
+                "get_equipment_status",
+                {"equipment_id": "Robot-01"},
+            ),
+            _build_tool_response(
+                "search_incidents",
+                {"query": "Robot-01 overheating risk", "top_k": 3},
+            ),
+            _build_text_response(
+                "현재 상태와 유사 장애 이력을 함께 확인했습니다."
+            ),
+        ],
+    ):
+        response = client.post(
+            "/agent/chat",
+            json={
+                "message": (
+                    "Robot-01의 현재 상태를 확인하고 과거 비슷한 "
+                    "장애이력을 찾아줘"
+                )
+            },
+        )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["total_steps"] == 2
+    assert [step["tool_called"] for step in data["steps"]] == [
+        "get_equipment_status",
+        "search_incidents",
+    ]
+    assert data["steps"][0]["success"] is True
+    assert data["steps"][1]["success"] is True
+    assert data["status"] == "completed"
+    assert data["termination_reason"] == "final_answer"
+
+
+def test_agent_chat_records_three_step_agentic_rag_trace():
+    client.post("/admin/seed")
+    incidents = client.get("/incidents").json()
+    robot_incident = next(
+        incident
+        for incident in incidents
+        if incident["equipment_name"] == "Robot-01"
+    )
+
+    with patch(
+        "backend.app.services.agent_service.LlmService.generate_content",
+        side_effect=[
+            _build_tool_response(
+                "get_equipment_status",
+                {"equipment_id": "Robot-01"},
+            ),
+            _build_tool_response(
+                "search_incidents",
+                {"query": "Robot-01 servo drift overheating", "top_k": 3},
+            ),
+            _build_tool_response(
+                "get_incident",
+                {"incident_id": robot_incident["incident_id"]},
+            ),
+            _build_text_response(
+                "현재 위험 원인과 과거 조치 방향을 종합했습니다."
+            ),
+        ],
+    ):
+        response = client.post(
+            "/agent/chat",
+            json={
+                "message": (
+                    "Robot-01의 현재 상태를 확인하고 과거 비슷한 "
+                    "장애이력을 찾아서 위험 원인과 조치 방향을 알려줘"
+                )
+            },
+        )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["total_steps"] == 3
+    assert [step["tool_called"] for step in data["steps"]] == [
+        "get_equipment_status",
+        "search_incidents",
+        "get_incident",
+    ]
+    assert data["steps"][0]["tool_arguments"] == {
+        "equipment_id": "Robot-01"
+    }
+    assert data["steps"][2]["tool_arguments"]["incident_id"] == (
+        robot_incident["incident_id"]
+    )
+    assert data["answer"] == (
+        "현재 위험 원인과 과거 조치 방향을 종합했습니다."
+    )
+
+
 def test_agent_chat_returns_direct_answer_without_tool_call():
     with patch(
         "backend.app.services.agent_service.LlmService.generate_content",

@@ -5,6 +5,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.orm import Session
 
 from backend.app.services.llm_service import LlmService
+from backend.app.tools.industrial_tools import (
+    get_equipment_status,
+    get_equipment_telemetry,
+    get_high_risk_equipment,
+)
 from backend.app.tools.incident_tools import (
     get_equipment_incidents,
     get_incident,
@@ -25,6 +30,18 @@ class GetEquipmentIncidentsArgs(BaseModel):
     equipment_name: str
 
 
+class GetEquipmentStatusArgs(BaseModel):
+    equipment_id: str
+
+
+class GetEquipmentTelemetryArgs(BaseModel):
+    equipment_id: str
+
+
+class GetHighRiskEquipmentArgs(BaseModel):
+    pass
+
+
 class ToolCallResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -41,6 +58,9 @@ Choose at most one tool for each user request.
 Use get_equipment_incidents for equipment-specific incident history requests.
 Use search_incidents for symptom-based or similar-incident search.
 Use get_incident for a specific incident ID or when you need to inspect one chosen incident in more detail after search results.
+Use get_equipment_status to inspect current equipment condition, latest telemetry, and current risk reasons.
+Use get_equipment_telemetry when you need telemetry history for one equipment.
+Use get_high_risk_equipment when the user asks which equipment is currently risky.
 If no tool is needed, answer directly.
 After receiving a tool result, write a concise Korean answer grounded in the tool output.
 """.strip()
@@ -49,12 +69,18 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         "search_incidents": SearchIncidentsArgs,
         "get_incident": GetIncidentArgs,
         "get_equipment_incidents": GetEquipmentIncidentsArgs,
+        "get_equipment_status": GetEquipmentStatusArgs,
+        "get_equipment_telemetry": GetEquipmentTelemetryArgs,
+        "get_high_risk_equipment": GetHighRiskEquipmentArgs,
     }
 
     _TOOL_REGISTRY = {
         "search_incidents": search_incidents,
         "get_incident": get_incident,
         "get_equipment_incidents": get_equipment_incidents,
+        "get_equipment_status": get_equipment_status,
+        "get_equipment_telemetry": get_equipment_telemetry,
+        "get_high_risk_equipment": get_high_risk_equipment,
     }
 
     @classmethod
@@ -156,6 +182,62 @@ After receiving a tool result, write a concise Korean answer grounded in the too
                             },
                         },
                         "required": ["equipment_name"],
+                    },
+                )
+            )
+
+        if "get_equipment_status" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="get_equipment_status",
+                    description=(
+                        "현재 설비 상태를 조회한다. 설비 정보, 최신 "
+                        "telemetry, 현재 고위험 여부와 위험 사유를 함께 "
+                        "확인할 수 있다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "equipment_id": {
+                                "type": "string",
+                                "description": "조회할 설비 ID",
+                            },
+                        },
+                        "required": ["equipment_id"],
+                    },
+                )
+            )
+
+        if "get_equipment_telemetry" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="get_equipment_telemetry",
+                    description=(
+                        "특정 설비의 telemetry 이력을 조회한다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "equipment_id": {
+                                "type": "string",
+                                "description": "조회할 설비 ID",
+                            },
+                        },
+                        "required": ["equipment_id"],
+                    },
+                )
+            )
+
+        if "get_high_risk_equipment" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="get_high_risk_equipment",
+                    description=(
+                        "현재 고위험 설비 목록을 조회한다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {},
                     },
                 )
             )
