@@ -15,6 +15,7 @@ Use get_equipment_telemetry to inspect telemetry history for one equipment when 
 Use get_high_risk_equipment when the user asks which equipment currently needs attention.
 Use search_incidents to find relevant past cases.
 Use get_incident to inspect a selected incident more closely.
+Use create_maintenance_request only when the user explicitly asks to create a maintenance request after reviewing the evidence.
 Answer in concise Korean grounded in the tool results.
 Do not invent unavailable maintenance-specific tools.
 """.strip(),
@@ -24,5 +25,6 @@ Do not invent unavailable maintenance-specific tools.
         "get_equipment_status",
         "get_equipment_telemetry",
         "get_high_risk_equipment",
+        "create_maintenance_request",
     ],
 )

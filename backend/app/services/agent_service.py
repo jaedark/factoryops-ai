@@ -8,6 +8,8 @@ from backend.app.schemas.agent import (
     AgentState,
     AgentStatus,
     AgentStep,
+    ApprovalActionResponse,
+    ApprovalRequest,
     MemoryMessage,
     AgentTerminationReason,
 )
@@ -29,6 +31,7 @@ class AgentResult(BaseModel):
     total_steps: int
     status: AgentStatus
     termination_reason: AgentTerminationReason
+    approval_request: ApprovalRequest | None = None
 
 
 class AgentExecutionError(ValueError):
@@ -93,8 +96,11 @@ class AgentService:
             steps=state.steps,
             total_steps=len(state.steps),
             status=state.status,
-            termination_reason=state.termination_reason
-            or AgentTerminationReason.FINAL_ANSWER,
+            termination_reason=(
+                state.termination_reason
+                or AgentTerminationReason.FINAL_ANSWER
+            ),
+            approval_request=state.approval_request,
         )
 
     @classmethod
@@ -193,6 +199,8 @@ class AgentService:
         agent_definition: AgentDefinition,
         message: str,
         max_steps: int = 5,
+        session_id: str | None = None,
+        approval_store=None,
     ) -> AgentResult:
         state = cls._create_state(
             message=message,
@@ -259,6 +267,40 @@ class AgentService:
                     agent_definition=agent_definition,
                     tool_name=tool_name,
                 )
+                guardrail_decision = (
+                    ToolCallingService.evaluate_guardrail(
+                        tool_name=tool_name,
+                        tool_arguments=tool_arguments,
+                    )
+                )
+                if guardrail_decision.approval_required:
+                    approval_request = (
+                        ToolCallingService.create_approval_request(
+                            tool_name=tool_name,
+                            tool_arguments=tool_arguments,
+                            reason=guardrail_decision.reason,
+                            session_id=session_id,
+                            approval_store=approval_store,
+                        )
+                    )
+                    state.steps.append(
+                        AgentStep(
+                            step=step_number,
+                            tool_called=tool_name,
+                            tool_arguments=tool_arguments,
+                            tool_result=None,
+                            success=False,
+                            approval_required=True,
+                            approval_id=approval_request.approval_id,
+                        )
+                    )
+                    state.status = AgentStatus.WAITING_APPROVAL
+                    state.termination_reason = (
+                        AgentTerminationReason.APPROVAL_REQUIRED
+                    )
+                    state.final_answer = guardrail_decision.reason
+                    state.approval_request = approval_request
+                    return cls._build_result(state)
                 tool_result = ToolCallingService.execute_tool(
                     db=db,
                     tool_name=tool_name,
@@ -270,11 +312,11 @@ class AgentService:
                     AgentStep(
                         step=step_number,
                         tool_called=tool_name,
-                        tool_arguments=function_call.args or {},
-                        tool_result=None,
-                        success=False,
-                        error=error_message,
-                    )
+                    tool_arguments=function_call.args or {},
+                    tool_result=None,
+                    success=False,
+                    error=error_message,
+                )
                 )
                 state.status = AgentStatus.FAILED
                 state.termination_reason = cls._get_tool_error_reason(
@@ -338,11 +380,38 @@ class AgentService:
             agent_definition=INCIDENT_ANALYSIS_AGENT,
             message=context_message,
             max_steps=max_steps,
-        )
-        cls._append_session_memory(
             session_id=session_id,
-            user_message=message,
-            assistant_answer=result.answer,
-            memory_store=memory_store,
+            approval_store=ToolCallingService.get_approval_store(),
         )
+        if result.status != AgentStatus.WAITING_APPROVAL:
+            cls._append_session_memory(
+                session_id=session_id,
+                user_message=message,
+                assistant_answer=result.answer,
+                memory_store=memory_store,
+            )
         return result
+
+    @classmethod
+    def approve_tool_execution(
+        cls,
+        db: Session,
+        approval_id: str,
+        approval_store=None,
+    ) -> ApprovalActionResponse:
+        return ToolCallingService.approve_tool_execution(
+            db=db,
+            approval_id=approval_id,
+            approval_store=approval_store,
+        )
+
+    @classmethod
+    def reject_tool_execution(
+        cls,
+        approval_id: str,
+        approval_store=None,
+    ) -> ApprovalActionResponse:
+        return ToolCallingService.reject_tool_execution(
+            approval_id=approval_id,
+            approval_store=approval_store,
+        )

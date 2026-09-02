@@ -29,6 +29,7 @@ class AgentStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    WAITING_APPROVAL = "waiting_approval"
 
 
 class AgentTerminationReason(str, Enum):
@@ -38,6 +39,41 @@ class AgentTerminationReason(str, Enum):
     INVALID_TOOL = "invalid_tool"
     INVALID_ARGUMENTS = "invalid_arguments"
     LLM_ERROR = "llm_error"
+    APPROVAL_REQUIRED = "approval_required"
+
+
+class ToolRiskLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class ToolPolicy(BaseModel):
+    tool_name: str = Field(min_length=1)
+    risk_level: ToolRiskLevel
+    approval_required: bool
+
+
+class GuardrailDecision(BaseModel):
+    allowed_to_execute: bool
+    approval_required: bool
+    risk_level: ToolRiskLevel
+    reason: str = Field(min_length=1)
+
+
+class ApprovalRequest(BaseModel):
+    approval_id: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+    tool_arguments: dict[str, Any]
+    status: ApprovalStatus
+    reason: str = Field(min_length=1)
+    session_id: str | None = None
 
 
 class AgentStep(BaseModel):
@@ -47,6 +83,8 @@ class AgentStep(BaseModel):
     tool_result: Any = None
     success: bool
     error: str | None = None
+    approval_required: bool = False
+    approval_id: str | None = None
 
 
 class AgentState(BaseModel):
@@ -60,6 +98,7 @@ class AgentState(BaseModel):
     termination_reason: AgentTerminationReason | None = None
     final_answer: str | None = None
     error: str | None = None
+    approval_request: ApprovalRequest | None = None
 
 
 class MemoryMessage(BaseModel):
@@ -78,3 +117,9 @@ class AgentChatResponse(BaseModel):
     total_steps: int
     status: AgentStatus
     termination_reason: AgentTerminationReason
+    approval_request: ApprovalRequest | None = None
+
+
+class ApprovalActionResponse(BaseModel):
+    approval_request: ApprovalRequest
+    tool_result: Any = None

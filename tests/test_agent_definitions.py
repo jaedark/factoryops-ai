@@ -68,6 +68,7 @@ def test_agent_definitions_are_configured():
         "get_equipment_status",
         "get_equipment_telemetry",
         "get_high_risk_equipment",
+        "create_maintenance_request",
     ]
 
     assert REPORT_AGENT.name == "report"

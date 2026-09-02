@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from sqlalchemy.orm import Session
 
 from backend.app.services.industrial_data_service import (
@@ -101,3 +103,31 @@ def get_high_risk_equipment(
         }
         for item in high_risk_items
     ]
+
+
+def create_maintenance_request(
+    db: Session,
+    equipment_id: str,
+    reason: str,
+) -> dict:
+    """
+    학습용 정비 요청을 생성한다.
+
+    Parameters:
+    - db: 기존 tool 인터페이스와 호환성을 위한 SQLAlchemy 세션
+    - equipment_id: 정비 요청 대상 설비 ID
+    - reason: 정비 요청 사유
+
+    Returns:
+    - 생성된 정비 요청 정보
+    """
+    _ = db
+    service = IndustrialDataService()
+    equipment = service.get_equipment(equipment_id)
+
+    return {
+        "request_id": f"MR-{uuid4().hex[:8].upper()}",
+        "equipment_id": equipment.equipment_id,
+        "reason": reason,
+        "status": "created",
+    }

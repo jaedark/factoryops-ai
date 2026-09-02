@@ -7,6 +7,13 @@ from google.genai import types
 from backend.main import app
 from backend.app.core.database import SessionLocal
 from backend.app.schemas.agent import MemoryMessage
+from backend.app.agents import (
+    INCIDENT_ANALYSIS_AGENT,
+    MAINTENANCE_RECOMMENDATION_AGENT,
+)
+from backend.app.services.guardrail_service import (
+    InMemoryApprovalStore,
+)
 from backend.app.services.memory_service import (
     InMemoryMemoryStore,
 )
@@ -537,3 +544,235 @@ def test_agent_service_records_tool_execution_error_state():
         finally:
             if db is not None:
                 db.close()
+
+
+def test_agent_write_tool_waits_for_human_approval():
+    db = SessionLocal()
+    approval_store = InMemoryApprovalStore()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                    "reason": "servo drift requires inspection",
+                },
+            ),
+        ), patch(
+            "backend.app.services.tool_calling_service.ToolCallingService.execute_tool"
+        ) as mock_execute:
+            result = AgentService.run(
+                db=db,
+                agent_definition=MAINTENANCE_RECOMMENDATION_AGENT,
+                message="Robot-01 정비 요청 생성해줘",
+                approval_store=approval_store,
+            )
+
+        assert result.status == "waiting_approval"
+        assert result.termination_reason == "approval_required"
+        assert result.approval_request is not None
+        assert result.approval_request.status == "pending"
+        assert result.steps[0].tool_called == "create_maintenance_request"
+        assert result.steps[0].approval_required is True
+        assert result.steps[0].approval_id == (
+            result.approval_request.approval_id
+        )
+        assert mock_execute.called is False
+    finally:
+        db.close()
+
+
+def test_agent_invalid_arguments_are_rejected_before_guardrail():
+    db = SessionLocal()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                },
+            ),
+        ), patch(
+            "backend.app.services.tool_calling_service.ToolCallingService.evaluate_guardrail"
+        ) as mock_guardrail:
+            try:
+                AgentService.run(
+                    db=db,
+                    agent_definition=MAINTENANCE_RECOMMENDATION_AGENT,
+                    message="Robot-01 정비 요청 생성해줘",
+                )
+                assert False, "Expected AgentExecutionError"
+            except AgentExecutionError as exc:
+                assert exc.state.termination_reason == "invalid_arguments"
+                assert mock_guardrail.called is False
+    finally:
+        db.close()
+
+
+def test_agent_blocks_disallowed_write_tool_before_guardrail():
+    db = SessionLocal()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                    "reason": "servo drift requires inspection",
+                },
+            ),
+        ), patch(
+            "backend.app.services.tool_calling_service.ToolCallingService.evaluate_guardrail"
+        ) as mock_guardrail:
+            try:
+                AgentService.run(
+                    db=db,
+                    agent_definition=INCIDENT_ANALYSIS_AGENT,
+                    message="Robot-01 정비 요청 생성해줘",
+                )
+                assert False, "Expected AgentExecutionError"
+            except AgentExecutionError as exc:
+                assert exc.state.termination_reason == "invalid_tool"
+                assert mock_guardrail.called is False
+    finally:
+        db.close()
+
+
+def test_approve_executes_pending_tool():
+    db = SessionLocal()
+    approval_store = InMemoryApprovalStore()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                    "reason": "servo drift requires inspection",
+                },
+            ),
+        ):
+            pending = AgentService.run(
+                db=db,
+                agent_definition=MAINTENANCE_RECOMMENDATION_AGENT,
+                message="Robot-01 정비 요청 생성해줘",
+                approval_store=approval_store,
+            )
+
+        approval_id = pending.approval_request.approval_id
+        executed = AgentService.approve_tool_execution(
+            db=db,
+            approval_id=approval_id,
+            approval_store=approval_store,
+        )
+
+        assert executed.approval_request.status == "approved"
+        assert executed.tool_result["equipment_id"] == "Robot-01"
+        assert executed.tool_result["status"] == "created"
+    finally:
+        db.close()
+
+
+def test_reject_blocks_tool_execution():
+    db = SessionLocal()
+    approval_store = InMemoryApprovalStore()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                    "reason": "servo drift requires inspection",
+                },
+            ),
+        ):
+            pending = AgentService.run(
+                db=db,
+                agent_definition=MAINTENANCE_RECOMMENDATION_AGENT,
+                message="Robot-01 정비 요청 생성해줘",
+                approval_store=approval_store,
+            )
+
+        approval_id = pending.approval_request.approval_id
+        rejected = AgentService.reject_tool_execution(
+            approval_id=approval_id,
+            approval_store=approval_store,
+        )
+
+        assert rejected.approval_request.status == "rejected"
+
+        try:
+            AgentService.approve_tool_execution(
+                db=db,
+                approval_id=approval_id,
+                approval_store=approval_store,
+            )
+            assert False, "Expected ValueError"
+        except ValueError as exc:
+            assert "rejected" in str(exc)
+    finally:
+        db.close()
+
+
+def test_approval_api_executes_approved_request():
+    with patch(
+        "backend.app.services.tool_calling_service.LlmService.generate_content",
+        return_value=_build_tool_response(
+            "create_maintenance_request",
+            {
+                "equipment_id": "Robot-01",
+                "reason": "servo drift requires inspection",
+            },
+        ),
+    ):
+        pending_response = client.post(
+            "/tools/chat",
+            json={"message": "Robot-01 정비 요청 생성해줘"},
+        )
+
+    approval_id = pending_response.json()["approval_request"][
+        "approval_id"
+    ]
+    response = client.post(
+        f"/agent/approvals/{approval_id}/approve"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approval_request"]["status"] == "approved"
+    assert response.json()["tool_result"]["equipment_id"] == "Robot-01"
+
+
+def test_approval_api_rejects_request():
+    with patch(
+        "backend.app.services.tool_calling_service.LlmService.generate_content",
+        return_value=_build_tool_response(
+            "create_maintenance_request",
+            {
+                "equipment_id": "Robot-01",
+                "reason": "servo drift requires inspection",
+            },
+        ),
+    ):
+        pending_response = client.post(
+            "/tools/chat",
+            json={"message": "Robot-01 정비 요청 생성해줘"},
+        )
+
+    approval_id = pending_response.json()["approval_request"][
+        "approval_id"
+    ]
+    response = client.post(
+        f"/agent/approvals/{approval_id}/reject"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approval_request"]["status"] == "rejected"
+    assert response.json()["tool_result"] is None

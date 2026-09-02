@@ -4,8 +4,20 @@ from google.genai import types
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.orm import Session
 
+from backend.app.schemas.agent import (
+    AgentStatus,
+    AgentTerminationReason,
+    ApprovalActionResponse,
+    ApprovalRequest,
+)
+from backend.app.services.guardrail_service import (
+    ApprovalStore,
+    GuardrailService,
+    InMemoryApprovalStore,
+)
 from backend.app.services.llm_service import LlmService
 from backend.app.tools.industrial_tools import (
+    create_maintenance_request,
     get_equipment_status,
     get_equipment_telemetry,
     get_high_risk_equipment,
@@ -42,6 +54,11 @@ class GetHighRiskEquipmentArgs(BaseModel):
     pass
 
 
+class CreateMaintenanceRequestArgs(BaseModel):
+    equipment_id: str
+    reason: str
+
+
 class ToolCallResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -49,9 +66,13 @@ class ToolCallResult(BaseModel):
     tool_called: str | None = None
     tool_arguments: dict[str, Any] | None = None
     tool_result: Any | None = None
+    status: AgentStatus | None = None
+    termination_reason: AgentTerminationReason | None = None
+    approval_request: ApprovalRequest | None = None
 
 
 class ToolCallingService:
+    _APPROVAL_STORE: ApprovalStore = InMemoryApprovalStore()
     _SYSTEM_INSTRUCTION = """
 You are FactoryOps AI.
 Choose at most one tool for each user request.
@@ -61,6 +82,7 @@ Use get_incident for a specific incident ID or when you need to inspect one chos
 Use get_equipment_status to inspect current equipment condition, latest telemetry, and current risk reasons.
 Use get_equipment_telemetry when you need telemetry history for one equipment.
 Use get_high_risk_equipment when the user asks which equipment is currently risky.
+Use create_maintenance_request only when the user explicitly asks to create a maintenance request.
 If no tool is needed, answer directly.
 After receiving a tool result, write a concise Korean answer grounded in the tool output.
 """.strip()
@@ -72,6 +94,7 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         "get_equipment_status": GetEquipmentStatusArgs,
         "get_equipment_telemetry": GetEquipmentTelemetryArgs,
         "get_high_risk_equipment": GetHighRiskEquipmentArgs,
+        "create_maintenance_request": CreateMaintenanceRequestArgs,
     }
 
     _TOOL_REGISTRY = {
@@ -81,11 +104,18 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         "get_equipment_status": get_equipment_status,
         "get_equipment_telemetry": get_equipment_telemetry,
         "get_high_risk_equipment": get_high_risk_equipment,
+        "create_maintenance_request": create_maintenance_request,
     }
 
     @classmethod
     def get_tool_registry(cls) -> dict[str, Any]:
         return cls._TOOL_REGISTRY
+
+    @classmethod
+    def get_approval_store(
+        cls,
+    ) -> ApprovalStore:
+        return cls._APPROVAL_STORE
 
     @classmethod
     def build_generation_config(
@@ -242,6 +272,34 @@ After receiving a tool result, write a concise Korean answer grounded in the too
                 )
             )
 
+        if "create_maintenance_request" in selected_tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name="create_maintenance_request",
+                    description=(
+                        "정비 요청을 생성한다. 실제 자동 실행 전에 "
+                        "반드시 사람 승인 절차가 필요하다."
+                    ),
+                    parameters_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "equipment_id": {
+                                "type": "string",
+                                "description": "정비 요청 대상 설비 ID",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "정비 요청 사유",
+                            },
+                        },
+                        "required": [
+                            "equipment_id",
+                            "reason",
+                        ],
+                    },
+                )
+            )
+
         if not declarations:
             return []
 
@@ -311,6 +369,110 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         )
 
     @classmethod
+    def evaluate_guardrail(
+        cls,
+        tool_name: str,
+        tool_arguments: dict[str, Any],
+    ):
+        return GuardrailService.evaluate(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
+
+    @classmethod
+    def create_approval_request(
+        cls,
+        tool_name: str,
+        tool_arguments: dict[str, Any],
+        reason: str,
+        session_id: str | None = None,
+        approval_store: ApprovalStore | None = None,
+    ) -> ApprovalRequest:
+        store = approval_store or cls.get_approval_store()
+        return store.create(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            reason=reason,
+            session_id=session_id,
+        )
+
+    @classmethod
+    def get_approval_request(
+        cls,
+        approval_id: str,
+        approval_store: ApprovalStore | None = None,
+    ) -> ApprovalRequest:
+        store = approval_store or cls.get_approval_store()
+        return store.get(approval_id)
+
+    @classmethod
+    def approve_tool_execution(
+        cls,
+        db: Session,
+        approval_id: str,
+        approval_store: ApprovalStore | None = None,
+    ) -> ApprovalActionResponse:
+        store = approval_store or cls.get_approval_store()
+        approval_request = store.approve(approval_id)
+
+        tool_result = cls.execute_tool(
+            db=db,
+            tool_name=approval_request.tool_name,
+            tool_arguments=approval_request.tool_arguments,
+        )
+
+        return ApprovalActionResponse(
+            approval_request=approval_request,
+            tool_result=tool_result,
+        )
+
+    @classmethod
+    def reject_tool_execution(
+        cls,
+        approval_id: str,
+        approval_store: ApprovalStore | None = None,
+    ) -> ApprovalActionResponse:
+        store = approval_store or cls.get_approval_store()
+        approval_request = store.reject(approval_id)
+
+        return ApprovalActionResponse(
+            approval_request=approval_request,
+            tool_result=None,
+        )
+
+    @classmethod
+    def execute_approved_tool(
+        cls,
+        db: Session,
+        approval_id: str,
+        approval_store: ApprovalStore | None = None,
+    ) -> ApprovalActionResponse:
+        approval_request = cls.get_approval_request(
+            approval_id=approval_id,
+            approval_store=approval_store,
+        )
+
+        if approval_request.status == "pending":
+            raise ValueError(
+                f"Approval request is still pending: {approval_id}"
+            )
+        if approval_request.status == "rejected":
+            raise ValueError(
+                f"Approval request was rejected: {approval_id}"
+            )
+
+        tool_result = cls.execute_tool(
+            db=db,
+            tool_name=approval_request.tool_name,
+            tool_arguments=approval_request.tool_arguments,
+        )
+
+        return ApprovalActionResponse(
+            approval_request=approval_request,
+            tool_result=tool_result,
+        )
+
+    @classmethod
     def _build_final_answer(
         cls,
         user_message: str,
@@ -367,6 +529,29 @@ After receiving a tool result, write a concise Korean answer grounded in the too
             tool_name=tool_name,
             tool_arguments=function_call.args,
         )
+        guardrail_decision = cls.evaluate_guardrail(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
+
+        if guardrail_decision.approval_required:
+            approval_request = cls.create_approval_request(
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                reason=guardrail_decision.reason,
+            )
+            return ToolCallResult(
+                answer=guardrail_decision.reason,
+                tool_called=tool_name,
+                tool_arguments=tool_arguments,
+                tool_result=None,
+                status=AgentStatus.WAITING_APPROVAL,
+                termination_reason=(
+                    AgentTerminationReason.APPROVAL_REQUIRED
+                ),
+                approval_request=approval_request,
+            )
+
         tool_result = cls.execute_tool(
             db=db,
             tool_name=tool_name,
@@ -384,4 +569,6 @@ After receiving a tool result, write a concise Korean answer grounded in the too
             tool_called=tool_name,
             tool_arguments=tool_arguments,
             tool_result=tool_result,
+            status=AgentStatus.COMPLETED,
+            termination_reason=AgentTerminationReason.FINAL_ANSWER,
         )

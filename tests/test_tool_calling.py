@@ -65,6 +65,7 @@ def test_build_tool_schemas_contains_all_agentic_rag_tools():
         "get_equipment_status",
         "get_equipment_telemetry",
         "get_high_risk_equipment",
+        "create_maintenance_request",
     ]
 
 
@@ -85,6 +86,7 @@ def test_build_tool_schemas_none_returns_all_tools():
         "get_equipment_status",
         "get_equipment_telemetry",
         "get_high_risk_equipment",
+        "create_maintenance_request",
     ]
 
 
@@ -139,6 +141,7 @@ def test_industrial_tool_schemas_are_available():
             "get_equipment_status",
             "get_equipment_telemetry",
             "get_high_risk_equipment",
+            "create_maintenance_request",
         ]
     )
 
@@ -149,15 +152,21 @@ def test_industrial_tool_schemas_are_available():
         "get_equipment_status",
         "get_equipment_telemetry",
         "get_high_risk_equipment",
+        "create_maintenance_request",
     ]
 
     status_schema = declarations[0].parameters_json_schema
     telemetry_schema = declarations[1].parameters_json_schema
     high_risk_schema = declarations[2].parameters_json_schema
+    maintenance_schema = declarations[3].parameters_json_schema
 
     assert status_schema["required"] == ["equipment_id"]
     assert telemetry_schema["required"] == ["equipment_id"]
     assert high_risk_schema["properties"] == {}
+    assert maintenance_schema["required"] == [
+        "equipment_id",
+        "reason",
+    ]
 
 
 def test_tool_chat_calls_get_equipment_incidents():
@@ -309,3 +318,36 @@ def test_tool_chat_returns_plain_answer_without_tool_call():
     assert data["tool_called"] is None
     assert data["tool_arguments"] is None
     assert data["tool_result"] is None
+
+
+def test_tool_chat_creates_pending_approval_for_write_tool():
+    with patch(
+        "backend.app.services.tool_calling_service.LlmService.generate_content",
+        return_value=_build_tool_response(
+            "create_maintenance_request",
+            {
+                "equipment_id": "Robot-01",
+                "reason": "servo drift requires inspection",
+            },
+        ),
+    ), patch(
+        "backend.app.services.tool_calling_service.ToolCallingService.execute_tool",
+    ) as mock_execute:
+        response = client.post(
+            "/tools/chat",
+            json={"message": "Robot-01 정비 요청 생성해줘"},
+        )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["status"] == "waiting_approval"
+    assert data["termination_reason"] == "approval_required"
+    assert data["tool_called"] == "create_maintenance_request"
+    assert data["tool_result"] is None
+    assert data["approval_request"]["status"] == "pending"
+    assert data["approval_request"]["tool_name"] == (
+        "create_maintenance_request"
+    )
+    assert mock_execute.called is False

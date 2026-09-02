@@ -2,6 +2,7 @@ import pytest
 
 from backend.app.core.database import SessionLocal
 from backend.app.tools.industrial_tools import (
+    create_maintenance_request,
     get_equipment_status,
     get_equipment_telemetry,
     get_high_risk_equipment,
@@ -73,3 +74,21 @@ def test_get_equipment_status_raises_for_missing_equipment():
         db.close()
 
     assert str(exc.value) == "Equipment not found: UNKNOWN-EQUIPMENT"
+
+
+def test_create_maintenance_request_returns_dummy_write_result():
+    db = SessionLocal()
+
+    try:
+        result = create_maintenance_request(
+            db=db,
+            equipment_id="Robot-01",
+            reason="servo drift requires inspection",
+        )
+    finally:
+        db.close()
+
+    assert result["equipment_id"] == "Robot-01"
+    assert result["reason"] == "servo drift requires inspection"
+    assert result["status"] == "created"
+    assert result["request_id"].startswith("MR-")
