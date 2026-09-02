@@ -8,9 +8,16 @@ from backend.app.schemas.agent import (
     AgentState,
     AgentStatus,
     AgentStep,
+    MemoryMessage,
     AgentTerminationReason,
 )
+from backend.app.services.context_builder import ContextBuilder
 from backend.app.services.llm_service import LlmService
+from backend.app.services.memory_service import (
+    InMemoryMemoryStore,
+    MemoryStore,
+    MemoryStoreError,
+)
 from backend.app.services.tool_calling_service import (
     ToolCallingService,
 )
@@ -35,6 +42,9 @@ class AgentExecutionError(ValueError):
 
 
 class AgentService:
+    DEFAULT_MEMORY_MAX_MESSAGES = 6
+    _MEMORY_STORE: MemoryStore = InMemoryMemoryStore()
+
     @staticmethod
     def _build_user_content(
         message: str,
@@ -86,6 +96,71 @@ class AgentService:
             termination_reason=state.termination_reason
             or AgentTerminationReason.FINAL_ANSWER,
         )
+
+    @classmethod
+    def get_memory_store(
+        cls,
+    ) -> MemoryStore:
+        return cls._MEMORY_STORE
+
+    @classmethod
+    def _build_context_message(
+        cls,
+        message: str,
+        session_id: str | None,
+        memory_store: MemoryStore | None,
+        max_memory_messages: int,
+    ) -> str:
+        if session_id is None:
+            return message
+
+        store = memory_store or cls.get_memory_store()
+
+        try:
+            memory_messages = store.get_messages(session_id)
+        except Exception as exc:
+            raise MemoryStoreError(
+                f"Failed to read session memory: {session_id}"
+            ) from exc
+
+        return ContextBuilder.build(
+            current_message=message,
+            memory_messages=memory_messages,
+            max_messages=max_memory_messages,
+        )
+
+    @classmethod
+    def _append_session_memory(
+        cls,
+        session_id: str | None,
+        user_message: str,
+        assistant_answer: str,
+        memory_store: MemoryStore | None,
+    ) -> None:
+        if session_id is None:
+            return
+
+        store = memory_store or cls.get_memory_store()
+
+        try:
+            store.append_message(
+                session_id,
+                MemoryMessage(
+                    role="user",
+                    content=user_message,
+                ),
+            )
+            store.append_message(
+                session_id,
+                MemoryMessage(
+                    role="assistant",
+                    content=assistant_answer,
+                ),
+            )
+        except Exception as exc:
+            raise MemoryStoreError(
+                f"Failed to write session memory: {session_id}"
+            ) from exc
 
     @staticmethod
     def _get_tool_error_reason(
@@ -248,10 +323,26 @@ class AgentService:
         db: Session,
         message: str,
         max_steps: int = 5,
+        session_id: str | None = None,
+        memory_store: MemoryStore | None = None,
+        max_memory_messages: int = DEFAULT_MEMORY_MAX_MESSAGES,
     ) -> AgentResult:
-        return cls.run(
+        context_message = cls._build_context_message(
+            message=message,
+            session_id=session_id,
+            memory_store=memory_store,
+            max_memory_messages=max_memory_messages,
+        )
+        result = cls.run(
             db=db,
             agent_definition=INCIDENT_ANALYSIS_AGENT,
-            message=message,
+            message=context_message,
             max_steps=max_steps,
         )
+        cls._append_session_memory(
+            session_id=session_id,
+            user_message=message,
+            assistant_answer=result.answer,
+            memory_store=memory_store,
+        )
+        return result

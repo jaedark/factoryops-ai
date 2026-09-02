@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -8,6 +8,14 @@ class AgentChatRequest(BaseModel):
     message: str = Field(
         min_length=1,
         description="Agent Loop로 처리할 사용자 자연어 요청",
+    )
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "선택적 세션 ID. 제공되면 이전 대화를 short-term "
+            "memory로 불러와 현재 요청 context에 포함한다."
+        ),
     )
     max_steps: int = Field(
         default=5,
@@ -52,6 +60,16 @@ class AgentState(BaseModel):
     termination_reason: AgentTerminationReason | None = None
     final_answer: str | None = None
     error: str | None = None
+
+
+class MemoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1)
+
+
+class ConversationMemory(BaseModel):
+    session_id: str = Field(min_length=1)
+    messages: list[MemoryMessage]
 
 
 class AgentChatResponse(BaseModel):

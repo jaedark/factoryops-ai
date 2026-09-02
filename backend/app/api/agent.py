@@ -10,6 +10,7 @@ from backend.app.services.agent_service import (
     AgentExecutionError,
     AgentService,
 )
+from backend.app.services.memory_service import MemoryStoreError
 
 
 router = APIRouter(
@@ -31,10 +32,16 @@ def agent_chat(
             db=db,
             message=request.message,
             max_steps=request.max_steps,
+            session_id=request.session_id,
         )
     except AgentExecutionError as exc:
         raise HTTPException(
             status_code=400,
+            detail=str(exc),
+        ) from exc
+    except MemoryStoreError as exc:
+        raise HTTPException(
+            status_code=500,
             detail=str(exc),
         ) from exc
     except ValueError as exc:

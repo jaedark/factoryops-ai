@@ -5,6 +5,11 @@ from fastapi.testclient import TestClient
 from google.genai import types
 
 from backend.main import app
+from backend.app.core.database import SessionLocal
+from backend.app.schemas.agent import MemoryMessage
+from backend.app.services.memory_service import (
+    InMemoryMemoryStore,
+)
 from backend.app.services.agent_service import (
     AgentExecutionError,
     AgentService,
@@ -251,6 +256,154 @@ def test_agent_chat_returns_direct_answer_without_tool_call():
     assert data["total_steps"] == 0
     assert data["status"] == "completed"
     assert data["termination_reason"] == "final_answer"
+
+
+def test_agent_chat_without_session_id_keeps_existing_stateless_behavior():
+    with patch(
+        "backend.app.services.agent_service.LlmService.generate_content",
+        return_value=_build_text_response("세션 없이 답변합니다."),
+    ):
+        response = client.post(
+            "/agent/chat",
+            json={"message": "안녕"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "세션 없이 답변합니다."
+
+
+def test_agent_service_saves_memory_after_first_request():
+    db = SessionLocal()
+    memory_store = InMemoryMemoryStore()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            side_effect=[
+                _build_tool_response(
+                    "get_equipment_status",
+                    {"equipment_id": "Robot-01"},
+                ),
+                _build_text_response(
+                    "Robot-01은 현재 high risk 상태입니다."
+                ),
+            ],
+        ):
+            result = AgentService.chat(
+                db=db,
+                message="Robot-01 현재 상태 알려줘",
+                session_id="demo-001",
+                memory_store=memory_store,
+            )
+
+        messages = memory_store.get_messages("demo-001")
+
+        assert result.answer == "Robot-01은 현재 high risk 상태입니다."
+        assert [message.role for message in messages] == [
+            "user",
+            "assistant",
+        ]
+        assert messages[0].content == "Robot-01 현재 상태 알려줘"
+        assert messages[1].content == "Robot-01은 현재 high risk 상태입니다."
+    finally:
+        db.close()
+
+
+def test_agent_service_injects_previous_conversation_for_follow_up_request():
+    db = SessionLocal()
+    memory_store = InMemoryMemoryStore()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            side_effect=[
+                _build_tool_response(
+                    "get_equipment_status",
+                    {"equipment_id": "Robot-01"},
+                ),
+                _build_text_response(
+                    "Robot-01은 현재 high risk 상태입니다."
+                ),
+                _build_tool_response(
+                    "get_equipment_incidents",
+                    {"equipment_name": "Robot-01"},
+                ),
+                _build_text_response(
+                    "Robot-01의 과거 장애 이력을 확인했습니다."
+                ),
+            ],
+        ) as mock_generate:
+            AgentService.chat(
+                db=db,
+                message="Robot-01 현재 상태 알려줘",
+                session_id="demo-001",
+                memory_store=memory_store,
+            )
+            AgentService.chat(
+                db=db,
+                message="그럼 과거 장애는?",
+                session_id="demo-001",
+                memory_store=memory_store,
+            )
+
+        follow_up_context = mock_generate.call_args_list[2].kwargs[
+            "contents"
+        ][0].parts[0].text
+
+        assert "Previous Conversation:" in follow_up_context
+        assert "User: Robot-01 현재 상태 알려줘" in follow_up_context
+        assert (
+            "Assistant: Robot-01은 현재 high risk 상태입니다."
+            in follow_up_context
+        )
+        assert "Current Request:\n그럼 과거 장애는?" in follow_up_context
+    finally:
+        db.close()
+
+
+def test_agent_service_applies_recent_memory_limit():
+    db = SessionLocal()
+    memory_store = InMemoryMemoryStore()
+
+    for index in range(8):
+        memory_store.append_message(
+            "demo-001",
+            MemoryMessage(
+                role=(
+                    "user"
+                    if index % 2 == 0
+                    else "assistant"
+                ),
+                content=f"message-{index}",
+            ),
+        )
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            side_effect=[
+                _build_text_response("최근 대화만 참고했습니다."),
+            ],
+        ) as mock_generate:
+            AgentService.chat(
+                db=db,
+                message="follow-up",
+                session_id="demo-001",
+                memory_store=memory_store,
+                max_memory_messages=4,
+            )
+
+        context_text = mock_generate.call_args.kwargs["contents"][0].parts[
+            0
+        ].text
+
+        assert "message-0" not in context_text
+        assert "message-3" not in context_text
+        assert "message-4" in context_text
+        assert "message-7" in context_text
+    finally:
+        db.close()
+
 
 
 def test_agent_chat_blocks_unsupported_tool():
