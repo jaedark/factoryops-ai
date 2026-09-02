@@ -70,6 +70,10 @@ def test_approval_store_approve_and_reject_transitions():
     )
 
     assert approved.status == "approved"
+    executed = approve_store.mark_executed(
+        approve_request.approval_id
+    )
+    assert executed.status == "executed"
 
     reject_store = InMemoryApprovalStore()
     reject_request = reject_store.create(
@@ -86,3 +90,46 @@ def test_approval_store_approve_and_reject_transitions():
     )
 
     assert rejected.status == "rejected"
+
+
+def test_approval_store_blocks_invalid_reapproval_and_rereject():
+    approved_store = InMemoryApprovalStore()
+    approved_request = approved_store.create(
+        tool_name="create_maintenance_request",
+        tool_arguments={
+            "equipment_id": "Robot-01",
+            "reason": "servo drift requires inspection",
+        },
+        reason="needs approval",
+    )
+    approved_store.approve(approved_request.approval_id)
+    approved_store.mark_executed(approved_request.approval_id)
+
+    try:
+        approved_store.approve(approved_request.approval_id)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "already executed" in str(exc)
+
+    try:
+        approved_store.reject(approved_request.approval_id)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "already executed" in str(exc)
+
+    rejected_store = InMemoryApprovalStore()
+    rejected_request = rejected_store.create(
+        tool_name="create_maintenance_request",
+        tool_arguments={
+            "equipment_id": "Robot-01",
+            "reason": "servo drift requires inspection",
+        },
+        reason="needs approval",
+    )
+    rejected_store.reject(rejected_request.approval_id)
+
+    try:
+        rejected_store.approve(rejected_request.approval_id)
+        assert False, "Expected ValueError"
+    except ValueError as exc:
+        assert "rejected" in str(exc)

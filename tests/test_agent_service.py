@@ -21,6 +21,9 @@ from backend.app.services.agent_service import (
     AgentExecutionError,
     AgentService,
 )
+from backend.app.services.tool_calling_service import (
+    ToolCallingService,
+)
 
 
 client = TestClient(app)
@@ -672,9 +675,60 @@ def test_approve_executes_pending_tool():
             approval_store=approval_store,
         )
 
-        assert executed.approval_request.status == "approved"
+        assert executed.approval_request.status == "executed"
         assert executed.tool_result["equipment_id"] == "Robot-01"
         assert executed.tool_result["status"] == "created"
+    finally:
+        db.close()
+
+
+def test_same_approval_id_cannot_be_approved_twice():
+    db = SessionLocal()
+    approval_store = InMemoryApprovalStore()
+    original_execute_tool = ToolCallingService.execute_tool
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                    "reason": "servo drift requires inspection",
+                },
+            ),
+        ), patch(
+            "backend.app.services.tool_calling_service.ToolCallingService.execute_tool",
+            wraps=original_execute_tool,
+        ) as mock_execute:
+            pending = AgentService.run(
+                db=db,
+                agent_definition=MAINTENANCE_RECOMMENDATION_AGENT,
+                message="Robot-01 정비 요청 생성해줘",
+                approval_store=approval_store,
+            )
+            approval_id = pending.approval_request.approval_id
+
+            first_result = AgentService.approve_tool_execution(
+                db=db,
+                approval_id=approval_id,
+                approval_store=approval_store,
+            )
+
+            assert first_result.approval_request.status == "executed"
+            assert mock_execute.call_count == 1
+
+            try:
+                AgentService.approve_tool_execution(
+                    db=db,
+                    approval_id=approval_id,
+                    approval_store=approval_store,
+                )
+                assert False, "Expected ValueError"
+            except ValueError as exc:
+                assert "already executed" in str(exc)
+
+            assert mock_execute.call_count == 1
     finally:
         db.close()
 
@@ -722,6 +776,47 @@ def test_reject_blocks_tool_execution():
         db.close()
 
 
+def test_approved_request_cannot_be_rejected():
+    db = SessionLocal()
+    approval_store = InMemoryApprovalStore()
+
+    try:
+        with patch(
+            "backend.app.services.agent_service.LlmService.generate_content",
+            return_value=_build_tool_response(
+                "create_maintenance_request",
+                {
+                    "equipment_id": "Robot-01",
+                    "reason": "servo drift requires inspection",
+                },
+            ),
+        ):
+            pending = AgentService.run(
+                db=db,
+                agent_definition=MAINTENANCE_RECOMMENDATION_AGENT,
+                message="Robot-01 정비 요청 생성해줘",
+                approval_store=approval_store,
+            )
+
+        approval_id = pending.approval_request.approval_id
+        AgentService.approve_tool_execution(
+            db=db,
+            approval_id=approval_id,
+            approval_store=approval_store,
+        )
+
+        try:
+            AgentService.reject_tool_execution(
+                approval_id=approval_id,
+                approval_store=approval_store,
+            )
+            assert False, "Expected ValueError"
+        except ValueError as exc:
+            assert "already executed" in str(exc)
+    finally:
+        db.close()
+
+
 def test_approval_api_executes_approved_request():
     with patch(
         "backend.app.services.tool_calling_service.LlmService.generate_content",
@@ -746,8 +841,39 @@ def test_approval_api_executes_approved_request():
     )
 
     assert response.status_code == 200
-    assert response.json()["approval_request"]["status"] == "approved"
+    assert response.json()["approval_request"]["status"] == "executed"
     assert response.json()["tool_result"]["equipment_id"] == "Robot-01"
+
+
+def test_approval_api_blocks_second_approve_call():
+    with patch(
+        "backend.app.services.tool_calling_service.LlmService.generate_content",
+        return_value=_build_tool_response(
+            "create_maintenance_request",
+            {
+                "equipment_id": "Robot-01",
+                "reason": "servo drift requires inspection",
+            },
+        ),
+    ):
+        pending_response = client.post(
+            "/tools/chat",
+            json={"message": "Robot-01 정비 요청 생성해줘"},
+        )
+
+    approval_id = pending_response.json()["approval_request"][
+        "approval_id"
+    ]
+    first_response = client.post(
+        f"/agent/approvals/{approval_id}/approve"
+    )
+    second_response = client.post(
+        f"/agent/approvals/{approval_id}/approve"
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 400
+    assert "already executed" in second_response.json()["detail"]
 
 
 def test_approval_api_rejects_request():

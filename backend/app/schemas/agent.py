@@ -51,6 +51,7 @@ class ToolRiskLevel(str, Enum):
 class ApprovalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
+    EXECUTED = "executed"
     REJECTED = "rejected"
 
 

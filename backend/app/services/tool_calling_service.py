@@ -420,6 +420,7 @@ After receiving a tool result, write a concise Korean answer grounded in the too
             tool_name=approval_request.tool_name,
             tool_arguments=approval_request.tool_arguments,
         )
+        approval_request = store.mark_executed(approval_id)
 
         return ApprovalActionResponse(
             approval_request=approval_request,
@@ -460,12 +461,18 @@ After receiving a tool result, write a concise Korean answer grounded in the too
             raise ValueError(
                 f"Approval request was rejected: {approval_id}"
             )
+        if approval_request.status == "executed":
+            raise ValueError(
+                f"Approval request was already executed: {approval_id}"
+            )
 
         tool_result = cls.execute_tool(
             db=db,
             tool_name=approval_request.tool_name,
             tool_arguments=approval_request.tool_arguments,
         )
+        store = approval_store or cls.get_approval_store()
+        approval_request = store.mark_executed(approval_id)
 
         return ApprovalActionResponse(
             approval_request=approval_request,

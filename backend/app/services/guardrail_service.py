@@ -34,6 +34,11 @@ class ApprovalStore(Protocol):
         approval_id: str,
     ) -> ApprovalRequest: ...
 
+    def mark_executed(
+        self,
+        approval_id: str,
+    ) -> ApprovalRequest: ...
+
 
 class InMemoryApprovalStore:
     def __init__(
@@ -77,6 +82,14 @@ class InMemoryApprovalStore:
         approval_id: str,
     ) -> ApprovalRequest:
         request = self.get(approval_id)
+        if request.status == ApprovalStatus.APPROVED:
+            raise ValueError(
+                f"Approval request was already approved: {approval_id}"
+            )
+        if request.status == ApprovalStatus.EXECUTED:
+            raise ValueError(
+                f"Approval request was already executed: {approval_id}"
+            )
         if request.status == ApprovalStatus.REJECTED:
             raise ValueError(
                 f"Approval request was rejected: {approval_id}"
@@ -93,7 +106,24 @@ class InMemoryApprovalStore:
             raise ValueError(
                 f"Approval request was already approved: {approval_id}"
             )
+        if request.status == ApprovalStatus.EXECUTED:
+            raise ValueError(
+                f"Approval request was already executed: {approval_id}"
+            )
         request.status = ApprovalStatus.REJECTED
+        return request
+
+    def mark_executed(
+        self,
+        approval_id: str,
+    ) -> ApprovalRequest:
+        request = self.get(approval_id)
+        if request.status != ApprovalStatus.APPROVED:
+            raise ValueError(
+                "Approval request must be approved before execution: "
+                f"{approval_id}"
+            )
+        request.status = ApprovalStatus.EXECUTED
         return request
 
 
