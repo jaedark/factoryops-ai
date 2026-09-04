@@ -91,6 +91,7 @@ class AgentStep(BaseModel):
 class AgentState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    trace_id: str = Field(min_length=1)
     conversation: list[Any]
     steps: list[AgentStep]
     current_step: int
@@ -113,6 +114,7 @@ class ConversationMemory(BaseModel):
 
 
 class AgentChatResponse(BaseModel):
+    trace_id: str
     answer: str
     steps: list[AgentStep]
     total_steps: int

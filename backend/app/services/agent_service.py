@@ -1,9 +1,18 @@
+from time import perf_counter
+from uuid import uuid4
+
 from google.genai import types
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.app.agents import INCIDENT_ANALYSIS_AGENT
 from backend.app.agents.base import AgentDefinition
+from backend.app.observability import (
+    NoOpObservabilitySink,
+    ObservabilityEvent,
+    ObservabilityEventType,
+    ObservabilitySink,
+)
 from backend.app.schemas.agent import (
     AgentState,
     AgentStatus,
@@ -26,6 +35,7 @@ from backend.app.services.tool_calling_service import (
 
 
 class AgentResult(BaseModel):
+    trace_id: str
     answer: str
     steps: list[AgentStep]
     total_steps: int
@@ -47,6 +57,9 @@ class AgentExecutionError(ValueError):
 class AgentService:
     DEFAULT_MEMORY_MAX_MESSAGES = 6
     _MEMORY_STORE: MemoryStore = InMemoryMemoryStore()
+    _OBSERVABILITY_SINK: ObservabilitySink = (
+        NoOpObservabilitySink()
+    )
 
     @staticmethod
     def _build_user_content(
@@ -59,10 +72,12 @@ class AgentService:
 
     @staticmethod
     def _create_state(
+        trace_id: str,
         message: str,
         max_steps: int,
     ) -> AgentState:
         return AgentState(
+            trace_id=trace_id,
             conversation=[
                 AgentService._build_user_content(message)
             ],
@@ -92,6 +107,7 @@ class AgentService:
         state: AgentState,
     ) -> AgentResult:
         return AgentResult(
+            trace_id=state.trace_id,
             answer=state.final_answer or "",
             steps=state.steps,
             total_steps=len(state.steps),
@@ -108,6 +124,82 @@ class AgentService:
         cls,
     ) -> MemoryStore:
         return cls._MEMORY_STORE
+
+    @classmethod
+    def get_observability_sink(
+        cls,
+    ) -> ObservabilitySink:
+        return cls._OBSERVABILITY_SINK
+
+    @staticmethod
+    def _generate_trace_id() -> str:
+        return f"trc-{uuid4()}"
+
+    @staticmethod
+    def _sanitize_tool_arguments(
+        tool_arguments: dict,
+    ) -> dict:
+        return {
+            "argument_keys": sorted(tool_arguments.keys()),
+            "argument_count": len(tool_arguments),
+        }
+
+    @staticmethod
+    def _emit_event(
+        sink: ObservabilitySink,
+        event_type: ObservabilityEventType,
+        trace_id: str,
+        agent_name: str,
+        step: int | None = None,
+        tool_name: str | None = None,
+        latency_ms: float | None = None,
+        success: bool | None = None,
+        status: str | None = None,
+        error: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        sink.emit(
+            ObservabilityEvent(
+                trace_id=trace_id,
+                event_type=event_type,
+                agent_name=agent_name,
+                step=step,
+                tool_name=tool_name,
+                latency_ms=latency_ms,
+                success=success,
+                status=status,
+                error=error,
+                metadata=metadata or {},
+            )
+        )
+
+    @classmethod
+    def _emit_agent_failed(
+        cls,
+        sink: ObservabilitySink,
+        state: AgentState,
+        agent_definition: AgentDefinition,
+        started_at: float,
+    ) -> None:
+        cls._emit_event(
+            sink=sink,
+            event_type=ObservabilityEventType.AGENT_FAILED,
+            trace_id=state.trace_id,
+            agent_name=agent_definition.name,
+            step=state.current_step or None,
+            latency_ms=(perf_counter() - started_at) * 1000,
+            success=False,
+            status=state.status.value,
+            error=state.error,
+            metadata={
+                "termination_reason": (
+                    state.termination_reason.value
+                    if state.termination_reason is not None
+                    else None
+                ),
+                "step_count": len(state.steps),
+            },
+        )
 
     @classmethod
     def _build_context_message(
@@ -201,16 +293,48 @@ class AgentService:
         max_steps: int = 5,
         session_id: str | None = None,
         approval_store=None,
+        observability_sink: ObservabilitySink | None = None,
     ) -> AgentResult:
+        trace_id = cls._generate_trace_id()
         state = cls._create_state(
+            trace_id=trace_id,
             message=message,
             max_steps=max_steps,
+        )
+        sink = observability_sink or cls.get_observability_sink()
+        run_started_at = perf_counter()
+        cls._emit_event(
+            sink=sink,
+            event_type=ObservabilityEventType.AGENT_STARTED,
+            trace_id=trace_id,
+            agent_name=agent_definition.name,
+            success=True,
+            status=AgentStatus.RUNNING.value,
+            metadata={
+                "query_length": len(message),
+                "max_steps": max_steps,
+                "session_id_present": session_id is not None,
+            },
         )
 
         for step_number in range(1, max_steps + 1):
             state.current_step = step_number
 
             try:
+                llm_started_at = perf_counter()
+                cls._emit_event(
+                    sink=sink,
+                    event_type=ObservabilityEventType.LLM_CALL_STARTED,
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    status=state.status.value,
+                    metadata={
+                        "conversation_items": len(
+                            state.conversation
+                        ),
+                    },
+                )
                 response = LlmService.generate_content(
                     contents=state.conversation,
                     config=ToolCallingService.build_generation_config(
@@ -220,12 +344,56 @@ class AgentService:
                         allowed_tools=agent_definition.allowed_tools,
                     ),
                 )
+                cls._emit_event(
+                    sink=sink,
+                    event_type=(
+                        ObservabilityEventType.LLM_CALL_COMPLETED
+                    ),
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    latency_ms=(
+                        perf_counter() - llm_started_at
+                    ) * 1000,
+                    success=True,
+                    status=state.status.value,
+                    metadata={
+                        "function_call_count": len(
+                            response.function_calls or []
+                        ),
+                        "has_text_response": response.text is not None,
+                    },
+                )
             except Exception as exc:
                 state.status = AgentStatus.FAILED
                 state.termination_reason = (
                     AgentTerminationReason.LLM_ERROR
                 )
                 state.error = str(exc)
+                cls._emit_event(
+                    sink=sink,
+                    event_type=ObservabilityEventType.LLM_CALL_FAILED,
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    latency_ms=(
+                        perf_counter() - llm_started_at
+                    ) * 1000,
+                    success=False,
+                    status=state.status.value,
+                    error=str(exc),
+                    metadata={
+                        "conversation_items": len(
+                            state.conversation
+                        ),
+                    },
+                )
+                cls._emit_agent_failed(
+                    sink=sink,
+                    state=state,
+                    agent_definition=agent_definition,
+                    started_at=run_started_at,
+                )
                 raise AgentExecutionError(
                     str(exc),
                     state,
@@ -239,6 +407,28 @@ class AgentService:
                 state.termination_reason = (
                     AgentTerminationReason.FINAL_ANSWER
                 )
+                cls._emit_event(
+                    sink=sink,
+                    event_type=(
+                        ObservabilityEventType.AGENT_COMPLETED
+                    ),
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    latency_ms=(
+                        perf_counter() - run_started_at
+                    ) * 1000,
+                    success=True,
+                    status=state.status.value,
+                    metadata={
+                        "termination_reason": (
+                            state.termination_reason.value
+                        ),
+                        "step_count": len(state.steps),
+                        "final_answer_length": len(
+                            state.final_answer or ""
+                        ),
+                    },
+                )
                 return cls._build_result(state)
 
             if len(function_calls) > 1:
@@ -250,6 +440,12 @@ class AgentService:
                     AgentTerminationReason.TOOL_ERROR
                 )
                 state.error = error_message
+                cls._emit_agent_failed(
+                    sink=sink,
+                    state=state,
+                    agent_definition=agent_definition,
+                    started_at=run_started_at,
+                )
                 raise AgentExecutionError(
                     error_message,
                     state,
@@ -257,6 +453,8 @@ class AgentService:
 
             function_call = function_calls[0]
             tool_name = function_call.name
+            tool_arguments = function_call.args or {}
+            tool_started_at = None
 
             try:
                 tool_arguments = ToolCallingService.validate_tool_call(
@@ -300,29 +498,117 @@ class AgentService:
                     )
                     state.final_answer = guardrail_decision.reason
                     state.approval_request = approval_request
+                    cls._emit_event(
+                        sink=sink,
+                        event_type=(
+                            ObservabilityEventType.APPROVAL_REQUIRED
+                        ),
+                        trace_id=trace_id,
+                        agent_name=agent_definition.name,
+                        step=step_number,
+                        tool_name=tool_name,
+                        success=False,
+                        status=state.status.value,
+                        metadata={
+                            "approval_id": (
+                                approval_request.approval_id
+                            ),
+                            "risk_level": (
+                                guardrail_decision.risk_level.value
+                            ),
+                            **cls._sanitize_tool_arguments(
+                                tool_arguments
+                            ),
+                        },
+                    )
                     return cls._build_result(state)
+                tool_started_at = perf_counter()
+                cls._emit_event(
+                    sink=sink,
+                    event_type=(
+                        ObservabilityEventType.TOOL_CALL_STARTED
+                    ),
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    tool_name=tool_name,
+                    status=state.status.value,
+                    metadata=cls._sanitize_tool_arguments(
+                        tool_arguments
+                    ),
+                )
                 tool_result = ToolCallingService.execute_tool(
                     db=db,
                     tool_name=tool_name,
                     tool_arguments=tool_arguments,
                 )
+                cls._emit_event(
+                    sink=sink,
+                    event_type=(
+                        ObservabilityEventType.TOOL_CALL_COMPLETED
+                    ),
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    tool_name=tool_name,
+                    latency_ms=(
+                        perf_counter() - tool_started_at
+                    ) * 1000,
+                    success=True,
+                    status=state.status.value,
+                    metadata={
+                        **cls._sanitize_tool_arguments(
+                            tool_arguments
+                        ),
+                        "result_type": type(tool_result).__name__,
+                    },
+                )
             except Exception as exc:
                 error_message = str(exc)
+                event_metadata = {}
+                if tool_arguments is not None:
+                    event_metadata = cls._sanitize_tool_arguments(
+                        tool_arguments
+                    )
+                if tool_started_at is not None:
+                    cls._emit_event(
+                        sink=sink,
+                        event_type=(
+                            ObservabilityEventType.TOOL_CALL_FAILED
+                        ),
+                        trace_id=trace_id,
+                        agent_name=agent_definition.name,
+                        step=step_number,
+                        tool_name=tool_name,
+                        latency_ms=(
+                            perf_counter() - tool_started_at
+                        ) * 1000,
+                        success=False,
+                        status=AgentStatus.FAILED.value,
+                        error=error_message,
+                        metadata=event_metadata,
+                    )
                 state.steps.append(
                     AgentStep(
                         step=step_number,
                         tool_called=tool_name,
-                    tool_arguments=function_call.args or {},
-                    tool_result=None,
-                    success=False,
-                    error=error_message,
-                )
+                        tool_arguments=function_call.args or {},
+                        tool_result=None,
+                        success=False,
+                        error=error_message,
+                    )
                 )
                 state.status = AgentStatus.FAILED
                 state.termination_reason = cls._get_tool_error_reason(
                     error_message
                 )
                 state.error = error_message
+                cls._emit_agent_failed(
+                    sink=sink,
+                    state=state,
+                    agent_definition=agent_definition,
+                    started_at=run_started_at,
+                )
                 raise AgentExecutionError(
                     error_message,
                     state,
@@ -354,6 +640,12 @@ class AgentService:
             AgentTerminationReason.MAX_STEPS_EXCEEDED
         )
         state.error = error_message
+        cls._emit_agent_failed(
+            sink=sink,
+            state=state,
+            agent_definition=agent_definition,
+            started_at=run_started_at,
+        )
         raise AgentExecutionError(
             error_message,
             state,
@@ -368,6 +660,7 @@ class AgentService:
         session_id: str | None = None,
         memory_store: MemoryStore | None = None,
         max_memory_messages: int = DEFAULT_MEMORY_MAX_MESSAGES,
+        observability_sink: ObservabilitySink | None = None,
     ) -> AgentResult:
         context_message = cls._build_context_message(
             message=message,
@@ -382,6 +675,7 @@ class AgentService:
             max_steps=max_steps,
             session_id=session_id,
             approval_store=ToolCallingService.get_approval_store(),
+            observability_sink=observability_sink,
         )
         if result.status != AgentStatus.WAITING_APPROVAL:
             cls._append_session_memory(
