@@ -1,4 +1,5 @@
-from time import perf_counter
+from collections.abc import Callable
+from time import perf_counter, sleep
 from uuid import uuid4
 
 from google.genai import types
@@ -13,16 +14,26 @@ from backend.app.observability import (
     ObservabilityEventType,
     ObservabilitySink,
 )
+from backend.app.resilience import (
+    CircuitBreaker,
+    CircuitOpenError,
+    RetryPolicy,
+    calculate_backoff_delay,
+    classify_error,
+)
 from backend.app.schemas.agent import (
     AgentState,
     AgentStatus,
     AgentStep,
+    AgentTerminationReason,
     ApprovalActionResponse,
     ApprovalRequest,
     MemoryMessage,
-    AgentTerminationReason,
 )
 from backend.app.services.context_builder import ContextBuilder
+from backend.app.services.guardrail_service import (
+    GuardrailService,
+)
 from backend.app.services.llm_service import LlmService
 from backend.app.services.memory_service import (
     InMemoryMemoryStore,
@@ -56,10 +67,14 @@ class AgentExecutionError(ValueError):
 
 class AgentService:
     DEFAULT_MEMORY_MAX_MESSAGES = 6
+    DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
+    DEFAULT_TOOL_TIMEOUT_SECONDS = 5.0
+    DEFAULT_RETRY_POLICY = RetryPolicy()
     _MEMORY_STORE: MemoryStore = InMemoryMemoryStore()
     _OBSERVABILITY_SINK: ObservabilitySink = (
         NoOpObservabilitySink()
     )
+    _LLM_CIRCUIT_BREAKER = CircuitBreaker()
 
     @staticmethod
     def _build_user_content(
@@ -131,6 +146,12 @@ class AgentService:
     ) -> ObservabilitySink:
         return cls._OBSERVABILITY_SINK
 
+    @classmethod
+    def get_llm_circuit_breaker(
+        cls,
+    ) -> CircuitBreaker:
+        return cls._LLM_CIRCUIT_BREAKER
+
     @staticmethod
     def _generate_trace_id() -> str:
         return f"trc-{uuid4()}"
@@ -143,6 +164,13 @@ class AgentService:
             "argument_keys": sorted(tool_arguments.keys()),
             "argument_count": len(tool_arguments),
         }
+
+    @staticmethod
+    def _is_retryable_tool(
+        tool_name: str,
+    ) -> bool:
+        policy = GuardrailService.get_policy(tool_name)
+        return not policy.approval_required
 
     @staticmethod
     def _emit_event(
@@ -200,6 +228,346 @@ class AgentService:
                 "step_count": len(state.steps),
             },
         )
+
+    @classmethod
+    def _call_llm_with_resilience(
+        cls,
+        *,
+        trace_id: str,
+        agent_definition: AgentDefinition,
+        step_number: int,
+        state: AgentState,
+        sink: ObservabilitySink,
+        retry_policy: RetryPolicy,
+        sleep_fn: Callable[[float], None],
+        llm_circuit_breaker: CircuitBreaker,
+        timeout_seconds: float,
+    ):
+        try:
+            circuit_state = llm_circuit_breaker.allow_request()
+        except CircuitOpenError as exc:
+            classification = classify_error(exc)
+            cls._emit_event(
+                sink=sink,
+                event_type=ObservabilityEventType.CIRCUIT_REJECTED,
+                trace_id=trace_id,
+                agent_name=agent_definition.name,
+                step=step_number,
+                success=False,
+                status=AgentStatus.FAILED.value,
+                error=str(exc),
+                metadata={
+                    "component": "llm",
+                    "error_category": classification.category.value,
+                    "retryable": classification.retryable,
+                    "circuit_state": llm_circuit_breaker.state,
+                },
+            )
+            raise
+
+        last_error: Exception | None = None
+
+        for attempt in range(1, retry_policy.max_attempts + 1):
+            llm_started_at = perf_counter()
+            cls._emit_event(
+                sink=sink,
+                event_type=ObservabilityEventType.LLM_CALL_STARTED,
+                trace_id=trace_id,
+                agent_name=agent_definition.name,
+                step=step_number,
+                status=state.status.value,
+                metadata={
+                    "attempt": attempt,
+                    "max_attempts": retry_policy.max_attempts,
+                    "conversation_items": len(state.conversation),
+                    "timeout_seconds": timeout_seconds,
+                    "circuit_state": circuit_state,
+                },
+            )
+            try:
+                response = LlmService.generate_content(
+                    contents=state.conversation,
+                    config=ToolCallingService.build_generation_config(
+                        system_instruction=(
+                            agent_definition.system_instruction
+                        ),
+                        allowed_tools=agent_definition.allowed_tools,
+                    ),
+                )
+                llm_circuit_breaker.record_success()
+                cls._emit_event(
+                    sink=sink,
+                    event_type=ObservabilityEventType.LLM_CALL_COMPLETED,
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    latency_ms=(
+                        perf_counter() - llm_started_at
+                    ) * 1000,
+                    success=True,
+                    status=state.status.value,
+                    metadata={
+                        "attempt": attempt,
+                        "max_attempts": retry_policy.max_attempts,
+                        "function_call_count": len(
+                            response.function_calls or []
+                        ),
+                        "has_text_response": response.text is not None,
+                        "timeout_seconds": timeout_seconds,
+                        "circuit_state": llm_circuit_breaker.state,
+                    },
+                )
+                return response
+            except Exception as exc:
+                last_error = exc
+                classification = classify_error(exc)
+                is_last_attempt = (
+                    attempt >= retry_policy.max_attempts
+                )
+                if classification.retryable and not is_last_attempt:
+                    delay_seconds = calculate_backoff_delay(
+                        retry_policy,
+                        attempt,
+                    )
+                    cls._emit_event(
+                        sink=sink,
+                        event_type=(
+                            ObservabilityEventType.RETRY_SCHEDULED
+                        ),
+                        trace_id=trace_id,
+                        agent_name=agent_definition.name,
+                        step=step_number,
+                        latency_ms=(
+                            perf_counter() - llm_started_at
+                        ) * 1000,
+                        success=False,
+                        status=state.status.value,
+                        error=str(exc),
+                        metadata={
+                            "component": "llm",
+                            "attempt": attempt,
+                            "next_attempt": attempt + 1,
+                            "max_attempts": retry_policy.max_attempts,
+                            "delay_ms": delay_seconds * 1000,
+                            "error_category": (
+                                classification.category.value
+                            ),
+                            "retryable": classification.retryable,
+                            "timeout_seconds": timeout_seconds,
+                            "circuit_state": (
+                                llm_circuit_breaker.state
+                            ),
+                        },
+                    )
+                    sleep_fn(delay_seconds)
+                    continue
+
+                if classification.retryable:
+                    breaker_state = llm_circuit_breaker.record_failure()
+                    if breaker_state == "open":
+                        cls._emit_event(
+                            sink=sink,
+                            event_type=(
+                                ObservabilityEventType.CIRCUIT_OPENED
+                            ),
+                            trace_id=trace_id,
+                            agent_name=agent_definition.name,
+                            step=step_number,
+                            success=False,
+                            status=AgentStatus.FAILED.value,
+                            error=str(exc),
+                            metadata={
+                                "component": "llm",
+                                "attempt": attempt,
+                                "max_attempts": (
+                                    retry_policy.max_attempts
+                                ),
+                                "error_category": (
+                                    classification.category.value
+                                ),
+                                "circuit_state": breaker_state,
+                            },
+                        )
+
+                cls._emit_event(
+                    sink=sink,
+                    event_type=ObservabilityEventType.LLM_CALL_FAILED,
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    latency_ms=(
+                        perf_counter() - llm_started_at
+                    ) * 1000,
+                    success=False,
+                    status=AgentStatus.FAILED.value,
+                    error=str(exc),
+                    metadata={
+                        "attempt": attempt,
+                        "max_attempts": retry_policy.max_attempts,
+                        "conversation_items": len(
+                            state.conversation
+                        ),
+                        "timeout_seconds": timeout_seconds,
+                        "error_category": (
+                            classification.category.value
+                        ),
+                        "retryable": classification.retryable,
+                        "circuit_state": llm_circuit_breaker.state,
+                    },
+                )
+                raise
+
+        raise last_error or RuntimeError("LLM call failed")
+
+    @classmethod
+    def _execute_tool_with_resilience(
+        cls,
+        *,
+        db: Session,
+        trace_id: str,
+        agent_definition: AgentDefinition,
+        tool_name: str,
+        tool_arguments: dict,
+        step_number: int,
+        state: AgentState,
+        sink: ObservabilitySink,
+        retry_policy: RetryPolicy,
+        sleep_fn: Callable[[float], None],
+        timeout_seconds: float,
+    ):
+        retry_enabled = cls._is_retryable_tool(tool_name)
+        max_attempts = (
+            retry_policy.max_attempts
+            if retry_enabled
+            else 1
+        )
+        last_error: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            tool_started_at = perf_counter()
+            cls._emit_event(
+                sink=sink,
+                event_type=ObservabilityEventType.TOOL_CALL_STARTED,
+                trace_id=trace_id,
+                agent_name=agent_definition.name,
+                step=step_number,
+                tool_name=tool_name,
+                status=state.status.value,
+                metadata={
+                    **cls._sanitize_tool_arguments(
+                        tool_arguments
+                    ),
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "timeout_seconds": timeout_seconds,
+                    "retry_enabled": retry_enabled,
+                },
+            )
+            try:
+                tool_result = ToolCallingService.execute_tool(
+                    db=db,
+                    tool_name=tool_name,
+                    tool_arguments=tool_arguments,
+                )
+                cls._emit_event(
+                    sink=sink,
+                    event_type=(
+                        ObservabilityEventType.TOOL_CALL_COMPLETED
+                    ),
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    tool_name=tool_name,
+                    latency_ms=(
+                        perf_counter() - tool_started_at
+                    ) * 1000,
+                    success=True,
+                    status=state.status.value,
+                    metadata={
+                        **cls._sanitize_tool_arguments(
+                            tool_arguments
+                        ),
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "timeout_seconds": timeout_seconds,
+                        "result_type": type(tool_result).__name__,
+                    },
+                )
+                return tool_result
+            except Exception as exc:
+                last_error = exc
+                classification = classify_error(exc)
+                is_last_attempt = attempt >= max_attempts
+                if (
+                    retry_enabled
+                    and classification.retryable
+                    and not is_last_attempt
+                ):
+                    delay_seconds = calculate_backoff_delay(
+                        retry_policy,
+                        attempt,
+                    )
+                    cls._emit_event(
+                        sink=sink,
+                        event_type=(
+                            ObservabilityEventType.RETRY_SCHEDULED
+                        ),
+                        trace_id=trace_id,
+                        agent_name=agent_definition.name,
+                        step=step_number,
+                        tool_name=tool_name,
+                        latency_ms=(
+                            perf_counter() - tool_started_at
+                        ) * 1000,
+                        success=False,
+                        status=state.status.value,
+                        error=str(exc),
+                        metadata={
+                            "component": "tool",
+                            "attempt": attempt,
+                            "next_attempt": attempt + 1,
+                            "max_attempts": max_attempts,
+                            "delay_ms": delay_seconds * 1000,
+                            "error_category": (
+                                classification.category.value
+                            ),
+                            "retryable": classification.retryable,
+                            "timeout_seconds": timeout_seconds,
+                        },
+                    )
+                    sleep_fn(delay_seconds)
+                    continue
+
+                cls._emit_event(
+                    sink=sink,
+                    event_type=ObservabilityEventType.TOOL_CALL_FAILED,
+                    trace_id=trace_id,
+                    agent_name=agent_definition.name,
+                    step=step_number,
+                    tool_name=tool_name,
+                    latency_ms=(
+                        perf_counter() - tool_started_at
+                    ) * 1000,
+                    success=False,
+                    status=AgentStatus.FAILED.value,
+                    error=str(exc),
+                    metadata={
+                        **cls._sanitize_tool_arguments(
+                            tool_arguments
+                        ),
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "error_category": (
+                            classification.category.value
+                        ),
+                        "retryable": classification.retryable,
+                        "timeout_seconds": timeout_seconds,
+                        "retry_enabled": retry_enabled,
+                    },
+                )
+                raise
+
+        raise last_error or RuntimeError("Tool call failed")
 
     @classmethod
     def _build_context_message(
@@ -294,6 +662,11 @@ class AgentService:
         session_id: str | None = None,
         approval_store=None,
         observability_sink: ObservabilitySink | None = None,
+        retry_policy: RetryPolicy | None = None,
+        sleep_fn: Callable[[float], None] = sleep,
+        llm_circuit_breaker: CircuitBreaker | None = None,
+        llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS,
+        tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     ) -> AgentResult:
         trace_id = cls._generate_trace_id()
         state = cls._create_state(
@@ -302,6 +675,10 @@ class AgentService:
             max_steps=max_steps,
         )
         sink = observability_sink or cls.get_observability_sink()
+        retry_policy = retry_policy or cls.DEFAULT_RETRY_POLICY
+        llm_circuit_breaker = (
+            llm_circuit_breaker or cls.get_llm_circuit_breaker()
+        )
         run_started_at = perf_counter()
         cls._emit_event(
             sink=sink,
@@ -321,48 +698,16 @@ class AgentService:
             state.current_step = step_number
 
             try:
-                llm_started_at = perf_counter()
-                cls._emit_event(
-                    sink=sink,
-                    event_type=ObservabilityEventType.LLM_CALL_STARTED,
+                response = cls._call_llm_with_resilience(
                     trace_id=trace_id,
-                    agent_name=agent_definition.name,
-                    step=step_number,
-                    status=state.status.value,
-                    metadata={
-                        "conversation_items": len(
-                            state.conversation
-                        ),
-                    },
-                )
-                response = LlmService.generate_content(
-                    contents=state.conversation,
-                    config=ToolCallingService.build_generation_config(
-                        system_instruction=(
-                            agent_definition.system_instruction
-                        ),
-                        allowed_tools=agent_definition.allowed_tools,
-                    ),
-                )
-                cls._emit_event(
+                    agent_definition=agent_definition,
+                    step_number=step_number,
+                    state=state,
                     sink=sink,
-                    event_type=(
-                        ObservabilityEventType.LLM_CALL_COMPLETED
-                    ),
-                    trace_id=trace_id,
-                    agent_name=agent_definition.name,
-                    step=step_number,
-                    latency_ms=(
-                        perf_counter() - llm_started_at
-                    ) * 1000,
-                    success=True,
-                    status=state.status.value,
-                    metadata={
-                        "function_call_count": len(
-                            response.function_calls or []
-                        ),
-                        "has_text_response": response.text is not None,
-                    },
+                    retry_policy=retry_policy,
+                    sleep_fn=sleep_fn,
+                    llm_circuit_breaker=llm_circuit_breaker,
+                    timeout_seconds=llm_timeout_seconds,
                 )
             except Exception as exc:
                 state.status = AgentStatus.FAILED
@@ -370,24 +715,6 @@ class AgentService:
                     AgentTerminationReason.LLM_ERROR
                 )
                 state.error = str(exc)
-                cls._emit_event(
-                    sink=sink,
-                    event_type=ObservabilityEventType.LLM_CALL_FAILED,
-                    trace_id=trace_id,
-                    agent_name=agent_definition.name,
-                    step=step_number,
-                    latency_ms=(
-                        perf_counter() - llm_started_at
-                    ) * 1000,
-                    success=False,
-                    status=state.status.value,
-                    error=str(exc),
-                    metadata={
-                        "conversation_items": len(
-                            state.conversation
-                        ),
-                    },
-                )
                 cls._emit_agent_failed(
                     sink=sink,
                     state=state,
@@ -453,8 +780,6 @@ class AgentService:
 
             function_call = function_calls[0]
             tool_name = function_call.name
-            tool_arguments = function_call.args or {}
-            tool_started_at = None
 
             try:
                 tool_arguments = ToolCallingService.validate_tool_call(
@@ -522,72 +847,22 @@ class AgentService:
                         },
                     )
                     return cls._build_result(state)
-                tool_started_at = perf_counter()
-                cls._emit_event(
-                    sink=sink,
-                    event_type=(
-                        ObservabilityEventType.TOOL_CALL_STARTED
-                    ),
-                    trace_id=trace_id,
-                    agent_name=agent_definition.name,
-                    step=step_number,
-                    tool_name=tool_name,
-                    status=state.status.value,
-                    metadata=cls._sanitize_tool_arguments(
-                        tool_arguments
-                    ),
-                )
-                tool_result = ToolCallingService.execute_tool(
+
+                tool_result = cls._execute_tool_with_resilience(
                     db=db,
+                    trace_id=trace_id,
+                    agent_definition=agent_definition,
                     tool_name=tool_name,
                     tool_arguments=tool_arguments,
-                )
-                cls._emit_event(
+                    step_number=step_number,
+                    state=state,
                     sink=sink,
-                    event_type=(
-                        ObservabilityEventType.TOOL_CALL_COMPLETED
-                    ),
-                    trace_id=trace_id,
-                    agent_name=agent_definition.name,
-                    step=step_number,
-                    tool_name=tool_name,
-                    latency_ms=(
-                        perf_counter() - tool_started_at
-                    ) * 1000,
-                    success=True,
-                    status=state.status.value,
-                    metadata={
-                        **cls._sanitize_tool_arguments(
-                            tool_arguments
-                        ),
-                        "result_type": type(tool_result).__name__,
-                    },
+                    retry_policy=retry_policy,
+                    sleep_fn=sleep_fn,
+                    timeout_seconds=tool_timeout_seconds,
                 )
             except Exception as exc:
                 error_message = str(exc)
-                event_metadata = {}
-                if tool_arguments is not None:
-                    event_metadata = cls._sanitize_tool_arguments(
-                        tool_arguments
-                    )
-                if tool_started_at is not None:
-                    cls._emit_event(
-                        sink=sink,
-                        event_type=(
-                            ObservabilityEventType.TOOL_CALL_FAILED
-                        ),
-                        trace_id=trace_id,
-                        agent_name=agent_definition.name,
-                        step=step_number,
-                        tool_name=tool_name,
-                        latency_ms=(
-                            perf_counter() - tool_started_at
-                        ) * 1000,
-                        success=False,
-                        status=AgentStatus.FAILED.value,
-                        error=error_message,
-                        metadata=event_metadata,
-                    )
                 state.steps.append(
                     AgentStep(
                         step=step_number,
@@ -661,6 +936,11 @@ class AgentService:
         memory_store: MemoryStore | None = None,
         max_memory_messages: int = DEFAULT_MEMORY_MAX_MESSAGES,
         observability_sink: ObservabilitySink | None = None,
+        retry_policy: RetryPolicy | None = None,
+        sleep_fn: Callable[[float], None] = sleep,
+        llm_circuit_breaker: CircuitBreaker | None = None,
+        llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS,
+        tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     ) -> AgentResult:
         context_message = cls._build_context_message(
             message=message,
@@ -676,6 +956,11 @@ class AgentService:
             session_id=session_id,
             approval_store=ToolCallingService.get_approval_store(),
             observability_sink=observability_sink,
+            retry_policy=retry_policy,
+            sleep_fn=sleep_fn,
+            llm_circuit_breaker=llm_circuit_breaker,
+            llm_timeout_seconds=llm_timeout_seconds,
+            tool_timeout_seconds=tool_timeout_seconds,
         )
         if result.status != AgentStatus.WAITING_APPROVAL:
             cls._append_session_memory(

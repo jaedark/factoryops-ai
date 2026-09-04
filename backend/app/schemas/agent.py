@@ -52,6 +52,7 @@ class ApprovalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
     EXECUTED = "executed"
+    EXECUTION_FAILED = "execution_failed"
     REJECTED = "rejected"
 
 

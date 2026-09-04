@@ -414,12 +414,18 @@ After receiving a tool result, write a concise Korean answer grounded in the too
     ) -> ApprovalActionResponse:
         store = approval_store or cls.get_approval_store()
         approval_request = store.approve(approval_id)
-
-        tool_result = cls.execute_tool(
-            db=db,
-            tool_name=approval_request.tool_name,
-            tool_arguments=approval_request.tool_arguments,
-        )
+        try:
+            tool_result = cls.execute_tool(
+                db=db,
+                tool_name=approval_request.tool_name,
+                tool_arguments=approval_request.tool_arguments,
+            )
+        except Exception as exc:
+            store.mark_execution_failed(approval_id)
+            raise RuntimeError(
+                "Approved tool execution failed: "
+                f"{approval_id}: {exc}"
+            ) from exc
         approval_request = store.mark_executed(approval_id)
 
         return ApprovalActionResponse(
@@ -464,6 +470,11 @@ After receiving a tool result, write a concise Korean answer grounded in the too
         if approval_request.status == "executed":
             raise ValueError(
                 f"Approval request was already executed: {approval_id}"
+            )
+        if approval_request.status == "execution_failed":
+            raise ValueError(
+                "Approval request execution already failed: "
+                f"{approval_id}"
             )
 
         tool_result = cls.execute_tool(
