@@ -29,3 +29,16 @@ automatically.
 Dependency direction is one-way: `AgentService` depends on the runtime,
 recorder, and resilient executor. Those components do not import
 `AgentService`.
+
+## Docker Deployment Boundary
+
+```text
+Host
+    -> Docker Container (single process, single Uvicorn worker)
+        -> FastAPI
+            -> AgentService / Agent Runtime
+```
+
+The container emits logs to stdout and stderr. Secrets are injected at runtime,
+not copied into the image. SQLite and the in-memory memory, approval, and circuit
+breaker state are intentionally ephemeral in this development configuration.

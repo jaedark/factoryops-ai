@@ -376,3 +376,26 @@ Final Answer
 
 **제조 장애 상황을 이해하고, 필요한 데이터를 검색하고, 적절한 Tool을 선택해 실행하며,
 여러 단계의 판단을 거쳐 장애 대응과 보고 업무를 지원하는 Agentic Manufacturing Operations Platform**을 구현하는 것이 목표입니다.
+
+---
+
+## Docker 실행
+
+Docker image는 고정된 Python 3.14.3 runtime, 애플리케이션 의존성, FastAPI 소스를 함께 패키징합니다.
+
+```powershell
+docker build -t factory-agent:day22 .
+docker run --rm -p 8000:8000 -e GEMINI_API_KEY=$env:GEMINI_API_KEY factory-agent:day22
+```
+
+Compose로 실행하려면 다음 명령을 사용합니다.
+
+```powershell
+docker compose up --build -d
+docker compose ps
+docker compose down
+```
+
+기본 health endpoint는 `http://localhost:8000/health`입니다. `GEMINI_API_KEY`와 `GEMINI_MODEL`은 image에 포함하지 않고 실행 환경에서 주입합니다. 포트 충돌이 있으면 `FACTORY_AGENT_PORT`로 host port를 변경할 수 있습니다.
+
+현재 session memory, approval store, circuit breaker는 process memory 기반입니다. 따라서 기본 container는 단일 process와 Uvicorn worker 1개로 실행합니다. SQLite `factoryops.db`도 container filesystem에 생성되므로 container를 삭제하면 데이터가 유지되지 않습니다.
