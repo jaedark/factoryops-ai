@@ -42,3 +42,16 @@ Host
 The container emits logs to stdout and stderr. Secrets are injected at runtime,
 not copied into the image. SQLite and the in-memory memory, approval, and circuit
 breaker state are intentionally ephemeral in this development configuration.
+
+## Configuration Flow
+
+```text
+Environment / local .env
+    -> AppSettings (validated and cached)
+        -> AgentExecutionConfig / RetryPolicy / CircuitBreaker
+        -> LLM / Database / Retrieval services
+```
+
+`GEMINI_API_KEY` remains optional during process startup so health and non-LLM
+paths stay available. `LlmService` validates the key immediately before an LLM
+call. Settings logs must never include secret values or complete database URLs.

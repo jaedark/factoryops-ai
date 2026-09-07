@@ -1,12 +1,14 @@
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from backend.app.core.config import get_settings
+
 
 class EmbeddingService:
     # Reuse one multilingual encoder for every vector-search call
     # so the app does not pay model load cost repeatedly.
     _model = SentenceTransformer(
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        get_settings().embedding_model
     )
 
     @classmethod

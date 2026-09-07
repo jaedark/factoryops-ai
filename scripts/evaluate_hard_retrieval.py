@@ -1,10 +1,6 @@
 from time import perf_counter
 
-from backend.app.core.config import (
-    RERANKER_MODEL_NAME,
-    RERANK_FINAL_TOP_K,
-    RERANK_RETRIEVER_TOP_N,
-)
+from backend.app.core.config import get_settings
 from backend.app.core.database import SessionLocal
 from backend.app.services.reranker_service import (
     RerankerService,
@@ -15,6 +11,12 @@ from backend.app.services.rrf_search_service import (
 from backend.app.services.vector_search_service import (
     VectorSearchService,
 )
+
+
+_SETTINGS = get_settings()
+RERANKER_MODEL_NAME = _SETTINGS.reranker_model
+RERANK_RETRIEVER_TOP_N = _SETTINGS.reranker_top_n
+RERANK_FINAL_TOP_K = _SETTINGS.retrieval_top_k
 
 
 HARD_EVALUATION_CASES = [

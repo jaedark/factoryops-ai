@@ -27,3 +27,12 @@ class RetryPolicy(BaseModel):
     base_delay_seconds: float = Field(default=0.1, ge=0.0)
     max_delay_seconds: float = Field(default=0.5, ge=0.0)
     backoff_multiplier: float = Field(default=2.0, ge=1.0)
+
+    @classmethod
+    def from_settings(cls, settings) -> "RetryPolicy":
+        return cls(
+            max_attempts=settings.retry_max_attempts,
+            base_delay_seconds=settings.retry_base_delay_seconds,
+            max_delay_seconds=settings.retry_max_delay_seconds,
+            backoff_multiplier=settings.retry_backoff_multiplier,
+        )

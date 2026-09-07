@@ -10,11 +10,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def test_docker_runtime_uses_fixed_non_root_single_worker_configuration():
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    runner = (PROJECT_ROOT / "backend/run.py").read_text(encoding="utf-8")
 
     assert dockerfile.startswith("FROM python:3.14.3-slim")
     assert "USER appuser" in dockerfile
-    assert '"--host", "0.0.0.0"' in dockerfile
-    assert '"--workers", "1"' in dockerfile
+    assert 'CMD ["python", "-m", "backend.run"]' in dockerfile
+    assert "workers=1" in runner
     assert "HEALTHCHECK" in dockerfile
     assert "GEMINI_API_KEY" not in dockerfile
 
@@ -25,8 +26,13 @@ def test_compose_exposes_api_and_healthcheck_without_embedding_secrets():
     )
     service = compose["services"]["factory-agent"]
 
-    assert service["ports"] == ["${FACTORY_AGENT_PORT:-8000}:8000"]
+    assert service["ports"] == [
+        "${FACTORY_AGENT_PORT:-8000}:${FACTORY_AGENT_PORT:-8000}"
+    ]
     assert service["environment"]["GEMINI_API_KEY"] == "${GEMINI_API_KEY:-}"
+    assert service["environment"]["DATABASE_URL"] == (
+        "${DATABASE_URL:-sqlite:///./factoryops.db}"
+    )
     assert "healthcheck" in service
 
 

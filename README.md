@@ -399,3 +399,31 @@ docker compose down
 기본 health endpoint는 `http://localhost:8000/health`입니다. `GEMINI_API_KEY`와 `GEMINI_MODEL`은 image에 포함하지 않고 실행 환경에서 주입합니다. 포트 충돌이 있으면 `FACTORY_AGENT_PORT`로 host port를 변경할 수 있습니다.
 
 현재 session memory, approval store, circuit breaker는 process memory 기반입니다. 따라서 기본 container는 단일 process와 Uvicorn worker 1개로 실행합니다. SQLite `factoryops.db`도 container filesystem에 생성되므로 container를 삭제하면 데이터가 유지되지 않습니다.
+
+## Configuration
+
+로컬 실행에서는 repository root의 `.env`를 읽고, Docker와 Cloud에서는 같은 이름의 환경변수를 주입합니다. 시작용 파일은 `.env.example`이며 실제 secret은 commit하지 않습니다.
+
+| Variable | Required | Default | Description | Secret |
+| --- | --- | --- | --- | --- |
+| `GEMINI_API_KEY` | LLM 사용 시 | 없음 | Gemini API 인증 | Yes |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model | No |
+| `DATABASE_URL` | No | `sqlite:///./factoryops.db` | SQLAlchemy connection URL | Depends |
+| `FACTORY_AGENT_HOST` | No | `0.0.0.0` | API bind host | No |
+| `FACTORY_AGENT_PORT` | No | `8000` | API bind port | No |
+| `AGENT_MAX_STEPS` | No | `5` | Agent loop 최대 step | No |
+| `LLM_TIMEOUT_SECONDS` | No | `15` | LLM timeout 정책값 | No |
+| `TOOL_TIMEOUT_SECONDS` | No | `5` | Tool timeout 정책값 | No |
+| `RETRY_MAX_ATTEMPTS` | No | `3` | transient 오류 최대 시도 수 | No |
+| `CIRCUIT_FAILURE_THRESHOLD` | No | `3` | Circuit open 연속 실패 기준 | No |
+| `RERANKER_MODEL` | No | multilingual CrossEncoder | Reranker model | No |
+
+```powershell
+Copy-Item .env.example .env
+# .env에 로컬 secret을 입력한 뒤 실행
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app
+
+docker run --rm -p 8000:8000 --env-file .env factory-agent:day22
+```
+
+`GEMINI_API_KEY`가 없어도 `/health`와 비 LLM API는 실행됩니다. 실제 LLM 호출 시에는 key가 없다는 configuration error를 반환합니다. 설정값이나 예외에는 API key 및 credential이 포함된 database URL을 출력하지 않습니다.

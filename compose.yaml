@@ -5,16 +5,33 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${FACTORY_AGENT_PORT:-8000}:8000"
+      - "${FACTORY_AGENT_PORT:-8000}:${FACTORY_AGENT_PORT:-8000}"
     environment:
+      APP_ENV: "${APP_ENV:-development}"
+      FACTORY_AGENT_HOST: "${FACTORY_AGENT_HOST:-0.0.0.0}"
+      FACTORY_AGENT_PORT: "${FACTORY_AGENT_PORT:-8000}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash}"
+      DATABASE_URL: "${DATABASE_URL:-sqlite:///./factoryops.db}"
+      AGENT_MAX_STEPS: "${AGENT_MAX_STEPS:-5}"
+      LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-15}"
+      TOOL_TIMEOUT_SECONDS: "${TOOL_TIMEOUT_SECONDS:-5}"
+      RETRY_MAX_ATTEMPTS: "${RETRY_MAX_ATTEMPTS:-3}"
+      RETRY_BASE_DELAY_SECONDS: "${RETRY_BASE_DELAY_SECONDS:-0.1}"
+      RETRY_MAX_DELAY_SECONDS: "${RETRY_MAX_DELAY_SECONDS:-0.5}"
+      RETRY_BACKOFF_MULTIPLIER: "${RETRY_BACKOFF_MULTIPLIER:-2.0}"
+      CIRCUIT_FAILURE_THRESHOLD: "${CIRCUIT_FAILURE_THRESHOLD:-3}"
+      CIRCUIT_RECOVERY_TIMEOUT_SECONDS: "${CIRCUIT_RECOVERY_TIMEOUT_SECONDS:-30}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+      RERANKER_MODEL: "${RERANKER_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}"
+      RERANKER_TOP_N: "${RERANKER_TOP_N:-5}"
+      RETRIEVAL_TOP_K: "${RETRIEVAL_TOP_K:-3}"
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+        - "import os, urllib.request; port=os.getenv('FACTORY_AGENT_PORT', '8000'); urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3)"
       interval: 30s
       timeout: 5s
       start_period: 10s

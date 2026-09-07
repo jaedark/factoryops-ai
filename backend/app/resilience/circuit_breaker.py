@@ -26,6 +26,15 @@ class CircuitBreaker:
         self._failure_count = 0
         self._opened_at: float | None = None
 
+    @classmethod
+    def from_settings(cls, settings) -> "CircuitBreaker":
+        return cls(
+            failure_threshold=settings.circuit_failure_threshold,
+            recovery_timeout_seconds=(
+                settings.circuit_recovery_timeout_seconds
+            ),
+        )
+
     @property
     def state(self) -> str:
         return self._state.value

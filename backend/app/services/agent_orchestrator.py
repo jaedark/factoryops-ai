@@ -228,7 +228,7 @@ class AgentOrchestrator:
     async def run(
         self,
         message: str,
-        max_steps: int = 5,
+        max_steps: int | None = None,
     ):
         agent_name = self.select_agent(message)
         agent_definition = AGENT_REGISTRY[agent_name]
@@ -247,7 +247,7 @@ class AgentOrchestrator:
     async def run_execution_plan(
         self,
         message: str,
-        max_steps: int = 5,
+        max_steps: int | None = None,
     ) -> MultiAgentExecutionResult:
         plan = self.build_execution_plan(message)
         db = self.session_factory()

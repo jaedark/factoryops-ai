@@ -2,9 +2,7 @@ from time import perf_counter
 
 from sentence_transformers import CrossEncoder
 
-from backend.app.core.config import (
-    RERANKER_MODEL_NAME,
-)
+from backend.app.core.config import get_settings
 
 
 class RerankerService:
@@ -21,7 +19,7 @@ class RerankerService:
             # Load once and reuse the same CrossEncoder instance
             # across rerank calls in this process.
             cls._shared_model = CrossEncoder(
-                RERANKER_MODEL_NAME
+                get_settings().reranker_model
             )
             cls._model_load_seconds = (
                 perf_counter() - started_at

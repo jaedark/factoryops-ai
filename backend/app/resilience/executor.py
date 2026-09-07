@@ -3,6 +3,7 @@ from time import perf_counter
 from sqlalchemy.orm import Session
 
 from backend.app.agents.base import AgentDefinition
+from backend.app.core.config import get_settings
 from backend.app.observability import ObservabilityEventType
 from backend.app.resilience.circuit_breaker import (
     CircuitBreaker,
@@ -20,13 +21,21 @@ from backend.app.services.tool_calling_service import ToolCallingService
 
 
 class ResilientExecutionService:
-    _DEFAULT_LLM_CIRCUIT_BREAKER = CircuitBreaker()
+    _DEFAULT_LLM_CIRCUIT_BREAKER: CircuitBreaker | None = None
 
     @classmethod
     def get_default_llm_circuit_breaker(
         cls,
     ) -> CircuitBreaker:
+        if cls._DEFAULT_LLM_CIRCUIT_BREAKER is None:
+            cls._DEFAULT_LLM_CIRCUIT_BREAKER = (
+                CircuitBreaker.from_settings(get_settings())
+            )
         return cls._DEFAULT_LLM_CIRCUIT_BREAKER
+
+    @classmethod
+    def reset_default_llm_circuit_breaker(cls) -> None:
+        cls._DEFAULT_LLM_CIRCUIT_BREAKER = None
 
     @staticmethod
     def _is_retryable_tool(

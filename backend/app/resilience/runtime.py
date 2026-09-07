@@ -18,6 +18,37 @@ class AgentExecutionConfig(BaseModel):
     tool_timeout_seconds: float = Field(default=5.0, gt=0.0)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
 
+    @classmethod
+    def from_settings(
+        cls,
+        settings,
+        *,
+        max_steps: int | None = None,
+        llm_timeout_seconds: float | None = None,
+        tool_timeout_seconds: float | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> "AgentExecutionConfig":
+        return cls(
+            max_steps=(
+                max_steps
+                if max_steps is not None
+                else settings.agent_max_steps
+            ),
+            llm_timeout_seconds=(
+                llm_timeout_seconds
+                if llm_timeout_seconds is not None
+                else settings.llm_timeout_seconds
+            ),
+            tool_timeout_seconds=(
+                tool_timeout_seconds
+                if tool_timeout_seconds is not None
+                else settings.tool_timeout_seconds
+            ),
+            retry_policy=(
+                retry_policy or RetryPolicy.from_settings(settings)
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class AgentRuntimeContext:

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.agents import INCIDENT_ANALYSIS_AGENT
 from backend.app.agents.base import AgentDefinition
+from backend.app.core.config import get_settings
 from backend.app.observability import (
     NoOpObservabilitySink,
     ObservabilityEventType,
@@ -62,14 +63,6 @@ class AgentExecutionError(ValueError):
 
 class AgentService:
     DEFAULT_MEMORY_MAX_MESSAGES = 6
-    DEFAULT_EXECUTION_CONFIG = AgentExecutionConfig()
-    DEFAULT_LLM_TIMEOUT_SECONDS = (
-        DEFAULT_EXECUTION_CONFIG.llm_timeout_seconds
-    )
-    DEFAULT_TOOL_TIMEOUT_SECONDS = (
-        DEFAULT_EXECUTION_CONFIG.tool_timeout_seconds
-    )
-    DEFAULT_RETRY_POLICY = DEFAULT_EXECUTION_CONFIG.retry_policy
     _MEMORY_STORE: MemoryStore = InMemoryMemoryStore()
     _OBSERVABILITY_SINK: ObservabilitySink = NoOpObservabilitySink()
 
@@ -213,7 +206,7 @@ class AgentService:
             retry_policy=retry_policy,
             sleep_fn=sleep_fn,
             llm_circuit_breaker=cls.get_llm_circuit_breaker(),
-            llm_timeout_seconds=cls.DEFAULT_LLM_TIMEOUT_SECONDS,
+            llm_timeout_seconds=get_settings().llm_timeout_seconds,
             tool_timeout_seconds=timeout_seconds,
         )
         return ResilientExecutionService.execute_tool(
@@ -310,31 +303,42 @@ class AgentService:
         db: Session,
         agent_definition: AgentDefinition,
         message: str,
-        max_steps: int = 5,
+        max_steps: int | None = None,
         session_id: str | None = None,
         approval_store=None,
         observability_sink: ObservabilitySink | None = None,
         retry_policy: RetryPolicy | None = None,
         sleep_fn: Callable[[float], None] = sleep,
         llm_circuit_breaker: CircuitBreaker | None = None,
-        llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS,
-        tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+        llm_timeout_seconds: float | None = None,
+        tool_timeout_seconds: float | None = None,
     ) -> AgentResult:
+        execution_config = AgentExecutionConfig.from_settings(
+            get_settings(),
+            max_steps=max_steps,
+            llm_timeout_seconds=llm_timeout_seconds,
+            tool_timeout_seconds=tool_timeout_seconds,
+            retry_policy=retry_policy,
+        )
         trace_id = cls._generate_trace_id()
-        state = cls._create_state(trace_id, message, max_steps)
+        state = cls._create_state(
+            trace_id,
+            message,
+            execution_config.max_steps,
+        )
         runtime = cls._build_runtime_context(
             trace_id=trace_id,
             agent_definition=agent_definition,
             sink=observability_sink or cls.get_observability_sink(),
-            max_steps=max_steps,
-            retry_policy=retry_policy or cls.DEFAULT_RETRY_POLICY,
+            max_steps=execution_config.max_steps,
+            retry_policy=execution_config.retry_policy,
             sleep_fn=sleep_fn,
             llm_circuit_breaker=(
                 llm_circuit_breaker
                 or cls.get_llm_circuit_breaker()
             ),
-            llm_timeout_seconds=llm_timeout_seconds,
-            tool_timeout_seconds=tool_timeout_seconds,
+            llm_timeout_seconds=execution_config.llm_timeout_seconds,
+            tool_timeout_seconds=execution_config.tool_timeout_seconds,
             approval_store=approval_store,
         )
         recorder = runtime.recorder
@@ -345,7 +349,7 @@ class AgentService:
             status=AgentStatus.RUNNING.value,
             metadata={
                 "query_length": len(message),
-                "max_steps": max_steps,
+                "max_steps": execution_config.max_steps,
                 "session_id_present": session_id is not None,
             },
         )
@@ -515,7 +519,7 @@ class AgentService:
         cls,
         db: Session,
         message: str,
-        max_steps: int = 5,
+        max_steps: int | None = None,
         session_id: str | None = None,
         memory_store: MemoryStore | None = None,
         max_memory_messages: int = DEFAULT_MEMORY_MAX_MESSAGES,
@@ -523,8 +527,8 @@ class AgentService:
         retry_policy: RetryPolicy | None = None,
         sleep_fn: Callable[[float], None] = sleep,
         llm_circuit_breaker: CircuitBreaker | None = None,
-        llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS,
-        tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+        llm_timeout_seconds: float | None = None,
+        tool_timeout_seconds: float | None = None,
     ) -> AgentResult:
         context_message = cls._build_context_message(
             message,

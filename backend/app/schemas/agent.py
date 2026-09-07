@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.core.config import get_settings
+
 
 class AgentChatRequest(BaseModel):
     message: str = Field(
@@ -18,7 +20,7 @@ class AgentChatRequest(BaseModel):
         ),
     )
     max_steps: int = Field(
-        default=5,
+        default_factory=lambda: get_settings().agent_max_steps,
         ge=1,
         le=10,
         description="Agent가 tool을 실행할 수 있는 최대 횟수",
