@@ -2,6 +2,9 @@ from backend.app.observability.models import (
     ObservabilityEvent,
     ObservabilityEventType,
 )
+from backend.app.observability.recorder import (
+    ObservabilityRecorder,
+)
 from backend.app.observability.sink import (
     InMemoryObservabilitySink,
     LoggingObservabilitySink,
@@ -15,5 +18,6 @@ __all__ = [
     "NoOpObservabilitySink",
     "ObservabilityEvent",
     "ObservabilityEventType",
+    "ObservabilityRecorder",
     "ObservabilitySink",
 ]
