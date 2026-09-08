@@ -512,3 +512,46 @@ gcloud secrets delete factory-agent-gemini-api-key
 gcloud secrets delete factory-agent-api-key
 gcloud iam service-accounts delete factory-agent-runtime@<PROJECT_ID>.iam.gserviceaccount.com
 ```
+
+## End-to-End Demo Scenario
+
+DAY27은 새 Agent workflow를 추가하지 않고 기존 API, Agent loop, Industrial
+Data, Incident RAG, memory, guardrail, approval, observability, resilience 연결을
+deterministic API test로 검증합니다.
+
+대표 분석 흐름:
+
+```text
+POST /agent/chat
+  -> X-API-Key
+  -> get_equipment_status (current industrial data)
+  -> search_incidents (historical RRF retrieval)
+  -> get_incident (selected incident detail)
+  -> final synthesis
+```
+
+대표 승인 흐름은 기존 least-privilege 경계를 유지합니다. `/agent/chat`의
+Incident Analysis Agent에는 write tool 권한이 없으므로 안전한 dummy 정비
+요청은 `/tools/chat`에서 생성하고, 반환된 `approval_id`를 approval API로
+승인합니다. 승인 전에는 tool이 실행되지 않으며 동일 ID 재승인은 차단됩니다.
+
+Mock LLM과 임시 SQLite를 사용하는 비용 없는 E2E test:
+
+```powershell
+$env:PYTHONPATH="C:\Projects\FactoryOpsAI"
+.\.venv\Scripts\python.exe -m pytest tests/e2e -q
+```
+
+실행 중인 API와 실제 Gemini 설정을 사용하는 수동 demo:
+
+```powershell
+$env:FACTORY_AGENT_API_KEY="<FACTORY_AGENT_API_KEY>"
+.\scripts\demo_e2e.ps1
+
+# Pending dummy maintenance action까지 명시적으로 승인
+.\scripts\demo_e2e.ps1 -ApproveMaintenanceRequest
+```
+
+Script는 `/health`, `/ready`, 분석 요청, 정비 요청 및 선택적 승인을 순서대로
+호출하며 secret을 출력하지 않습니다. 상세 expected evidence와 알려진 한계는
+[`docs/E2E_SCENARIOS.md`](docs/E2E_SCENARIOS.md)에 정리되어 있습니다.

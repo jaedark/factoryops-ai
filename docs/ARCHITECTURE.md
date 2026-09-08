@@ -93,3 +93,34 @@ The Cloud Run service is private by default and uses a dedicated runtime service
 account with secret-level accessor permission. SQLite and process-local memory,
 approval, and circuit state remain ephemeral. The one-instance demo limit reduces
 state divergence but is not a persistence mechanism.
+
+## End-to-End Scenario Boundary
+
+```text
+Client
+    -> API authentication / request ID
+        -> AgentService / trace ID
+            -> LLM tool selection
+                -> Industrial current data
+                -> Historical Incident RAG
+            -> LLM synthesis
+            -> final response
+
+High-risk action branch
+    -> tool allowlist
+        -> Guardrail
+            -> Human Approval
+                -> approved tool execution
+```
+
+The representative analysis scenario validates current equipment data and
+historical incident retrieval in one Agent trace. The approval scenario validates
+that a permitted high-risk action stops before execution and moves through the
+process-local approval state machine. Authentication controls caller access,
+the Agent allowlist controls capability, and Guardrail/Approval controls action
+execution; these are separate boundaries.
+
+`request_id` correlates one HTTP exchange while `trace_id` correlates one Agent
+execution. The `/agent/chat` route continues to run the Incident Analysis Agent;
+the Orchestrator and MCP client remain independent paths and are not artificially
+inserted into the DAY27 scenario.
