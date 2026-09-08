@@ -55,3 +55,23 @@ Environment / local .env
 `GEMINI_API_KEY` remains optional during process startup so health and non-LLM
 paths stay available. `LlmService` validates the key immediately before an LLM
 call. Settings logs must never include secret values or complete database URLs.
+
+## Google Cloud Deployment
+
+```text
+Developer
+    -> Cloud Build
+        -> Artifact Registry
+            -> Cloud Run (one instance, concurrency one)
+                -> FastAPI / Agent Runtime
+
+Secret Manager
+    -> GEMINI_API_KEY environment reference
+        -> AppSettings
+            -> LlmService
+```
+
+The Cloud Run service is private by default and uses a dedicated runtime service
+account with secret-level accessor permission. SQLite and process-local memory,
+approval, and circuit state remain ephemeral. The one-instance demo limit reduces
+state divergence but is not a persistence mechanism.

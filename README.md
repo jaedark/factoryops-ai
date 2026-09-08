@@ -427,3 +427,57 @@ docker run --rm -p 8000:8000 --env-file .env factory-agent:day22
 ```
 
 `GEMINI_API_KEY`가 없어도 `/health`와 비 LLM API는 실행됩니다. 실제 LLM 호출 시에는 key가 없다는 configuration error를 반환합니다. 설정값이나 예외에는 API key 및 credential이 포함된 database URL을 출력하지 않습니다.
+
+## Google Cloud Run Deployment
+
+DAY24 배포 경로는 Cloud Build가 기존 Dockerfile을 build하고 Artifact Registry에 Git commit 기반 tag로 push한 다음 Cloud Run에 배포하는 구조입니다. 기본 배포는 인증이 필요한 private service입니다.
+
+### Prerequisites
+
+- Google Cloud CLI 설치 및 `gcloud auth login` 완료
+- 과금이 연결된 기존 Google Cloud project 선택
+- Cloud Build 실행 계정에 Cloud Build, Artifact Registry write, Cloud Run deploy 권한 부여
+- Cloud Build 실행 계정에 runtime service account를 사용할 `iam.serviceAccounts.actAs` 권한 부여
+
+```powershell
+gcloud config set project <PROJECT_ID>
+gcloud auth list
+gcloud config get-value project
+
+# 로컬 GEMINI_API_KEY는 Secret Manager secret이 아직 없을 때만 사용됩니다.
+$env:GEMINI_API_KEY="<LOCAL_SECRET>"
+.\scripts\deploy_cloud_run.ps1
+```
+
+Script는 필요한 API를 활성화하고 `asia-northeast3`의 `factory-agent` Artifact Registry repository, `factory-agent-runtime` runtime service account, `factory-agent-gemini-api-key` secret을 확인합니다. 없는 secret은 로컬 key가 있을 때만 생성하며 값은 source나 build config에 기록하지 않습니다. Runtime service account에는 해당 secret의 `roles/secretmanager.secretAccessor`만 부여합니다.
+
+Cloud Build를 직접 다시 실행하려면 활성화된 secret version과 Git SHA를 substitution으로 전달합니다.
+
+```powershell
+$tag = (git rev-parse --short=12 HEAD).Trim()
+gcloud builds submit . --config=cloudbuild.yaml --region=asia-northeast3 `
+  --substitutions="_IMAGE_TAG=$tag,_SECRET_VERSION=<ENABLED_VERSION>"
+```
+
+기본 Cloud Run 설정은 `2 CPU`, `4Gi memory`, `min-instances=0`, `max-instances=1`, `concurrency=1`, Uvicorn worker 1개입니다. `PORT`는 Cloud Run이 주입하며 애플리케이션이 `FACTORY_AGENT_PORT`보다 우선 사용합니다. Public access가 필요하면 인증과 권한 설계를 먼저 추가한 후 명시적으로 변경해야 합니다.
+
+인증된 smoke test와 log 조회:
+
+```powershell
+$url = gcloud run services describe factory-agent --region=asia-northeast3 --format="value(status.url)"
+$token = gcloud auth print-identity-token
+Invoke-RestMethod "$url/health" -Headers @{ Authorization = "Bearer $token" }
+Invoke-RestMethod "$url/incidents" -Headers @{ Authorization = "Bearer $token" }
+gcloud run services logs read factory-agent --region=asia-northeast3 --limit=50
+```
+
+Cloud Run의 SQLite filesystem, session memory, approval store, circuit breaker는 모두 ephemeral입니다. `max-instances=1`과 `concurrency=1`은 demo 중 state 분산을 줄일 뿐 restart나 revision 교체 시 persistence를 보장하지 않습니다. Torch와 sentence-transformers 때문에 image와 cold start가 크며, 현재 embedding model은 process import 시 load됩니다.
+
+Cloud Run, Artifact Registry, Cloud Build, Secret Manager는 비용이 발생할 수 있습니다. Demo 확인 후 필요하지 않은 resource는 다음 명령으로 정리합니다.
+
+```powershell
+gcloud run services delete factory-agent --region=asia-northeast3
+gcloud artifacts repositories delete factory-agent --location=asia-northeast3
+gcloud secrets delete factory-agent-gemini-api-key
+gcloud iam service-accounts delete factory-agent-runtime@<PROJECT_ID>.iam.gserviceaccount.com
+```
