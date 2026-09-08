@@ -22,7 +22,7 @@ from backend.app.resilience import (
 from backend.app.services.agent_service import AgentService
 
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 def test_execution_config_groups_runtime_defaults():

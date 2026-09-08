@@ -13,6 +13,8 @@ class AppSettings(BaseModel):
     app_env: str = Field(default="development", min_length=1)
     factory_agent_host: str = Field(default="0.0.0.0", min_length=1)
     factory_agent_port: int = Field(default=8000, ge=1, le=65535)
+    factory_agent_api_key: SecretStr | None = None
+    api_max_request_bytes: int = Field(default=1_048_576, ge=1_024)
 
     gemini_api_key: SecretStr | None = None
     gemini_model: str = Field(default="gemini-2.5-flash", min_length=1)
@@ -66,6 +68,8 @@ class AppSettings(BaseModel):
             "app_env": ("APP_ENV",),
             "factory_agent_host": ("FACTORY_AGENT_HOST",),
             "factory_agent_port": ("FACTORY_AGENT_PORT",),
+            "factory_agent_api_key": ("FACTORY_AGENT_API_KEY",),
+            "api_max_request_bytes": ("API_MAX_REQUEST_BYTES",),
             "gemini_api_key": ("GEMINI_API_KEY",),
             "gemini_model": ("GEMINI_MODEL",),
             "database_url": ("DATABASE_URL",),
@@ -92,9 +96,16 @@ class AppSettings(BaseModel):
                     values[field_name] = os.environ[environment_name]
                     break
 
-        if values.get("gemini_api_key") == "":
-            values["gemini_api_key"] = None
+        for secret_name in ("gemini_api_key", "factory_agent_api_key"):
+            if values.get(secret_name) == "":
+                values[secret_name] = None
         return cls.model_validate(values)
+
+    def get_factory_agent_api_key(self) -> str | None:
+        if self.factory_agent_api_key is None:
+            return None
+        value = self.factory_agent_api_key.get_secret_value().strip()
+        return value or None
 
     def require_gemini_api_key(self) -> str:
         if self.gemini_api_key is None:

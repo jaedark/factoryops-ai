@@ -31,7 +31,7 @@ steps:
       - --concurrency=1
       - --service-account=${_RUNTIME_SERVICE_ACCOUNT}@$PROJECT_ID.iam.gserviceaccount.com
       - --set-env-vars=APP_ENV=production
-      - --set-secrets=GEMINI_API_KEY=${_SECRET_NAME}:${_SECRET_VERSION}
+      - --set-secrets=GEMINI_API_KEY=${_SECRET_NAME}:${_SECRET_VERSION},FACTORY_AGENT_API_KEY=${_API_SECRET_NAME}:${_API_SECRET_VERSION}
       - --no-allow-unauthenticated
       - --quiet
 
@@ -47,6 +47,8 @@ substitutions:
   _RUNTIME_SERVICE_ACCOUNT: factory-agent-runtime
   _SECRET_NAME: factory-agent-gemini-api-key
   _SECRET_VERSION: "1"
+  _API_SECRET_NAME: factory-agent-api-key
+  _API_SECRET_VERSION: "1"
 
 options:
   logging: CLOUD_LOGGING_ONLY

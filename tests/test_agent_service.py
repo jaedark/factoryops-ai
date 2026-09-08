@@ -26,7 +26,7 @@ from backend.app.services.tool_calling_service import (
 )
 
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 def _build_tool_response(
@@ -430,7 +430,7 @@ def test_agent_chat_blocks_unsupported_tool():
         )
 
     assert response.status_code == 400
-    assert "Unsupported tool requested" in response.json()["detail"]
+    assert "Unsupported tool requested" in response.json()["error"]["message"]
 
 
 def test_agent_chat_rejects_invalid_arguments():
@@ -447,7 +447,7 @@ def test_agent_chat_rejects_invalid_arguments():
         )
 
     assert response.status_code == 400
-    assert "Invalid arguments" in response.json()["detail"]
+    assert "Invalid arguments" in response.json()["error"]["message"]
 
 
 def test_agent_chat_stops_when_max_steps_exceeded():
@@ -473,7 +473,7 @@ def test_agent_chat_stops_when_max_steps_exceeded():
         )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Agent step limit exceeded"
+    assert response.json()["error"]["message"] == "Agent step limit exceeded"
 
 
 def test_agent_service_records_state_when_max_steps_exceeded():
@@ -873,7 +873,7 @@ def test_approval_api_blocks_second_approve_call():
 
     assert first_response.status_code == 200
     assert second_response.status_code == 400
-    assert "already executed" in second_response.json()["detail"]
+    assert "already executed" in second_response.json()["error"]["message"]
 
 
 def test_approval_api_rejects_request():

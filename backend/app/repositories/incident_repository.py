@@ -19,8 +19,12 @@ class IncidentRepository:
     @staticmethod
     def get_all(
         db: Session,
+        limit: int | None = None,
     ) -> list[Incident]:
-        return db.query(Incident).all()
+        query = db.query(Incident)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
     @staticmethod
     def get_by_id(
@@ -68,10 +72,11 @@ class IncidentRepository:
     def search_by_keyword(
         db: Session,
         keyword: str,
+        limit: int | None = None,
     ) -> list[Incident]:
         search_pattern = f"%{keyword}%"
 
-        return (
+        query = (
             db.query(Incident)
             .filter(
                 or_(
@@ -83,5 +88,7 @@ class IncidentRepository:
                     Incident.result.ilike(search_pattern),
                 )
             )
-            .all()
         )
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()

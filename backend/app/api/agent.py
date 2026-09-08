@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
+from backend.app.core.security import require_api_key
+from backend.app.api.errors import PROTECTED_ROUTE_RESPONSES
 from backend.app.schemas.agent import (
     ApprovalActionResponse,
     AgentChatRequest,
@@ -17,6 +19,8 @@ from backend.app.services.memory_service import MemoryStoreError
 router = APIRouter(
     prefix="/agent",
     tags=["agent"],
+    dependencies=[Depends(require_api_key)],
+    responses=PROTECTED_ROUTE_RESPONSES,
 )
 
 
@@ -61,7 +65,7 @@ def agent_chat(
     response_model=ApprovalActionResponse,
 )
 def approve_tool_execution(
-    approval_id: str,
+    approval_id: str = Path(min_length=1, max_length=128),
     db: Session = Depends(get_db),
 ) -> ApprovalActionResponse:
     try:
@@ -88,7 +92,7 @@ def approve_tool_execution(
     response_model=ApprovalActionResponse,
 )
 def reject_tool_execution(
-    approval_id: str,
+    approval_id: str = Path(min_length=1, max_length=128),
 ) -> ApprovalActionResponse:
     try:
         result = AgentService.reject_tool_execution(

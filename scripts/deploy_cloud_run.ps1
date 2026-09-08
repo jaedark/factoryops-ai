@@ -3,7 +3,8 @@ param(
     [string]$Repository = "factory-agent",
     [string]$ServiceName = "factory-agent",
     [string]$RuntimeServiceAccount = "factory-agent-runtime",
-    [string]$SecretName = "factory-agent-gemini-api-key"
+    [string]$SecretName = "factory-agent-gemini-api-key",
+    [string]$ApiSecretName = "factory-agent-api-key"
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,51 +56,66 @@ if ($LASTEXITCODE -ne 0) {
         --project=$projectId
 }
 
-gcloud secrets describe $SecretName --project=$projectId *> $null
-if ($LASTEXITCODE -ne 0) {
-    if (-not $env:GEMINI_API_KEY) {
-        throw "Secret does not exist and GEMINI_API_KEY is not set locally."
+function Get-OrCreateSecretVersion {
+    param(
+        [string]$Name,
+        [string]$EnvironmentName
+    )
+
+    gcloud secrets describe $Name --project=$projectId *> $null
+    if ($LASTEXITCODE -ne 0) {
+        $secretValue = [Environment]::GetEnvironmentVariable($EnvironmentName)
+        if (-not $secretValue) {
+            throw "Secret '$Name' does not exist and $EnvironmentName is not set locally."
+        }
+        gcloud secrets create $Name `
+            --replication-policy=automatic `
+            --project=$projectId | Out-Null
+        $secretFile = New-TemporaryFile
+        try {
+            [System.IO.File]::WriteAllText(
+                $secretFile.FullName,
+                $secretValue
+            )
+            gcloud secrets versions add $Name `
+                --data-file=$secretFile.FullName `
+                --project=$projectId | Out-Null
+        }
+        finally {
+            Remove-Item -LiteralPath $secretFile.FullName -Force
+        }
     }
-    gcloud secrets create $SecretName `
-        --replication-policy=automatic `
+
+    gcloud secrets add-iam-policy-binding $Name `
+        --member="serviceAccount:$runtimeServiceAccountEmail" `
+        --role="roles/secretmanager.secretAccessor" `
+        --project=$projectId *> $null
+
+    $versionName = gcloud secrets versions list $Name `
+        --filter="state=ENABLED" `
+        --sort-by="~createTime" `
+        --limit=1 `
+        --format="value(name)" `
         --project=$projectId
-    $secretFile = New-TemporaryFile
-    try {
-        [System.IO.File]::WriteAllText(
-            $secretFile.FullName,
-            $env:GEMINI_API_KEY
-        )
-        gcloud secrets versions add $SecretName `
-            --data-file=$secretFile.FullName `
-            --project=$projectId
+    if (-not $versionName) {
+        throw "No enabled secret version is available for '$Name'."
     }
-    finally {
-        Remove-Item -LiteralPath $secretFile.FullName -Force
-    }
+    return ($versionName -split "/")[-1]
 }
 
-gcloud secrets add-iam-policy-binding $SecretName `
-    --member="serviceAccount:$runtimeServiceAccountEmail" `
-    --role="roles/secretmanager.secretAccessor" `
-    --project=$projectId *> $null
-
-$secretVersionName = gcloud secrets versions list $SecretName `
-    --filter="state=ENABLED" `
-    --sort-by="~createTime" `
-    --limit=1 `
-    --format="value(name)" `
-    --project=$projectId
-if (-not $secretVersionName) {
-    throw "No enabled secret version is available."
-}
-$secretVersion = ($secretVersionName -split "/")[-1]
+$secretVersion = Get-OrCreateSecretVersion `
+    -Name $SecretName `
+    -EnvironmentName "GEMINI_API_KEY"
+$apiSecretVersion = Get-OrCreateSecretVersion `
+    -Name $ApiSecretName `
+    -EnvironmentName "FACTORY_AGENT_API_KEY"
 $imageTag = (git rev-parse --short=12 HEAD).Trim()
 
 gcloud builds submit . `
     --config=cloudbuild.yaml `
     --region=$Region `
     --project=$projectId `
-    --substitutions="_REGION=$Region,_REPOSITORY=$Repository,_IMAGE_NAME=$ServiceName,_IMAGE_TAG=$imageTag,_SERVICE_NAME=$ServiceName,_RUNTIME_SERVICE_ACCOUNT=$RuntimeServiceAccount,_SECRET_NAME=$SecretName,_SECRET_VERSION=$secretVersion"
+    --substitutions="_REGION=$Region,_REPOSITORY=$Repository,_IMAGE_NAME=$ServiceName,_IMAGE_TAG=$imageTag,_SERVICE_NAME=$ServiceName,_RUNTIME_SERVICE_ACCOUNT=$RuntimeServiceAccount,_SECRET_NAME=$SecretName,_SECRET_VERSION=$secretVersion,_API_SECRET_NAME=$ApiSecretName,_API_SECRET_VERSION=$apiSecretVersion"
 
 $serviceUrl = gcloud run services describe $ServiceName `
     --region=$Region `

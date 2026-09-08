@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
+from backend.app.core.security import require_api_key
+from backend.app.api.errors import PROTECTED_ROUTE_RESPONSES
 from backend.app.schemas.tool_calling import (
     ToolChatRequest,
     ToolChatResponse,
@@ -14,6 +16,8 @@ from backend.app.services.tool_calling_service import (
 router = APIRouter(
     prefix="/tools",
     tags=["tools"],
+    dependencies=[Depends(require_api_key)],
+    responses=PROTECTED_ROUTE_RESPONSES,
 )
 
 

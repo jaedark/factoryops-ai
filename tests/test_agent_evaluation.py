@@ -20,7 +20,7 @@ from backend.app.services.tool_calling_service import (
     ToolCallingService,
 )
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 def _build_tool_response(

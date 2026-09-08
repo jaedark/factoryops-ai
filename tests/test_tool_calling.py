@@ -15,7 +15,7 @@ from backend.app.services.tool_calling_service import (
 )
 
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 def _build_tool_response(
@@ -278,7 +278,7 @@ def test_tool_chat_blocks_unsupported_tool():
         )
 
     assert response.status_code == 400
-    assert "Unsupported tool requested" in response.json()["detail"]
+    assert "Unsupported tool requested" in response.json()["error"]["message"]
 
 
 def test_tool_chat_rejects_invalid_arguments():
@@ -295,7 +295,7 @@ def test_tool_chat_rejects_invalid_arguments():
         )
 
     assert response.status_code == 400
-    assert "Invalid arguments" in response.json()["detail"]
+    assert "Invalid arguments" in response.json()["error"]["message"]
 
 
 def test_tool_chat_returns_plain_answer_without_tool_call():

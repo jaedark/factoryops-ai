@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 def test_rag_analyze_returns_answer_and_sources():

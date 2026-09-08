@@ -24,8 +24,9 @@ class IncidentService:
     @staticmethod
     def get_incidents(
         db: Session,
+        limit: int | None = None,
     ) -> list[Incident]:
-        return IncidentRepository.get_all(db)
+        return IncidentRepository.get_all(db, limit=limit)
 
     @staticmethod
     def get_incident(
@@ -51,10 +52,12 @@ class IncidentService:
     def search_incidents(
         db: Session,
         keyword: str,
+        limit: int | None = None,
     ) -> list[Incident]:
         return IncidentRepository.search_by_keyword(
             db,
             keyword,
+            limit=limit,
         )
 
     @staticmethod

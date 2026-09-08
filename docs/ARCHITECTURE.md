@@ -21,6 +21,24 @@ Cross-cutting responsibilities remain separate:
 - Guardrail: decides whether an allowed tool may run automatically.
 - Approval: stores the state of high-risk action requests.
 
+## Production API Boundary
+
+```text
+HTTP Request
+    -> RequestContextMiddleware (request ID, size limit, safe request log)
+        -> X-API-Key authentication
+            -> FastAPI route
+                -> Agent / Tool / Domain service
+```
+
+`/health` is a public liveness check. `/ready` is a public readiness check for
+validated settings and a low-cost database connection; production readiness
+also requires both runtime secrets to be configured. Every business route is
+protected by `X-API-Key`. HTTP `request_id` and Agent `trace_id` remain separate:
+the first identifies one API request and the second identifies one Agent run.
+Errors use a sanitized common envelope and request logs exclude bodies, prompts,
+tool results, authorization headers, and secrets.
+
 `ToolCallingService.execute_tool()` is the raw application execution boundary.
 `ResilientExecutionService.execute_tool()` adds retry behavior only for
 read-only tools. Approval-required write tools are never replayed
@@ -66,9 +84,9 @@ Developer
                 -> FastAPI / Agent Runtime
 
 Secret Manager
-    -> GEMINI_API_KEY environment reference
+    -> GEMINI_API_KEY / FACTORY_AGENT_API_KEY environment references
         -> AppSettings
-            -> LlmService
+            -> LlmService / API security dependency
 ```
 
 The Cloud Run service is private by default and uses a dedicated runtime service

@@ -30,6 +30,9 @@ def test_compose_exposes_api_and_healthcheck_without_embedding_secrets():
         "${FACTORY_AGENT_PORT:-8000}:${FACTORY_AGENT_PORT:-8000}"
     ]
     assert service["environment"]["GEMINI_API_KEY"] == "${GEMINI_API_KEY:-}"
+    assert service["environment"]["FACTORY_AGENT_API_KEY"] == (
+        "${FACTORY_AGENT_API_KEY:-}"
+    )
     assert service["environment"]["DATABASE_URL"] == (
         "${DATABASE_URL:-sqlite:///./factoryops.db}"
     )

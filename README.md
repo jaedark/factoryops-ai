@@ -406,6 +406,8 @@ docker compose down
 
 | Variable | Required | Default | Description | Secret |
 | --- | --- | --- | --- | --- |
+| `FACTORY_AGENT_API_KEY` | 보호 API 사용 시 | 없음 | `X-API-Key` 인증 key | Yes |
+| `API_MAX_REQUEST_BYTES` | No | `1048576` | HTTP request body 상한 | No |
 | `GEMINI_API_KEY` | LLM 사용 시 | 없음 | Gemini API 인증 | Yes |
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model | No |
 | `DATABASE_URL` | No | `sqlite:///./factoryops.db` | SQLAlchemy connection URL | Depends |
@@ -426,7 +428,30 @@ Copy-Item .env.example .env
 docker run --rm -p 8000:8000 --env-file .env factory-agent:day22
 ```
 
-`GEMINI_API_KEY`가 없어도 `/health`와 비 LLM API는 실행됩니다. 실제 LLM 호출 시에는 key가 없다는 configuration error를 반환합니다. 설정값이나 예외에는 API key 및 credential이 포함된 database URL을 출력하지 않습니다.
+`GEMINI_API_KEY`와 `FACTORY_AGENT_API_KEY`가 없어도 프로세스와 `/health`는 시작됩니다. 보호 API는 `FACTORY_AGENT_API_KEY`가 설정되지 않으면 503, header가 없거나 틀리면 401을 반환합니다. 실제 LLM 호출에는 Gemini key가 필요합니다. 설정값이나 예외에는 API key 및 credential이 포함된 database URL을 출력하지 않습니다.
+
+## Production API Contract
+
+`GET /health`, `GET /ready`, `/docs`, `/openapi.json`은 애플리케이션 API key 없이 사용할 수 있습니다. 나머지 `/admin`, `/incidents`, `/rag`, `/tools`, `/agent` API는 모두 `X-API-Key` header가 필요합니다. Cloud Run IAM 인증과 애플리케이션 API key 인증은 별도 경계이므로 private Cloud Run의 보호 route 호출에는 둘 다 필요합니다.
+
+```powershell
+$headers = @{ "X-API-Key" = $env:FACTORY_AGENT_API_KEY }
+Invoke-RestMethod http://localhost:8000/incidents -Headers $headers
+```
+
+`/health`는 process liveness만 확인하며 DB, Gemini, model을 호출하지 않습니다. `/ready`는 저비용 DB `SELECT 1`을 수행하고, `APP_ENV=production`에서는 Gemini key와 Factory Agent API key가 모두 설정됐는지도 확인합니다. 오류 응답은 다음 공통 envelope를 사용하며 `X-Request-ID` response header와 body의 `request_id`가 일치합니다.
+
+```json
+{
+  "error": {
+    "code": "INVALID_REQUEST",
+    "message": "Request is invalid",
+    "request_id": "req-..."
+  }
+}
+```
+
+Agent message는 최대 8,000자, session ID와 approval ID는 최대 128자입니다. HTTP body는 기본 1 MiB로 제한되고 incident list/search는 한 요청당 최대 100건입니다. Request log에는 method, path, status, request ID, latency만 기록하며 body와 API key는 기록하지 않습니다. CORS와 process-local rate limiter는 추가하지 않았습니다.
 
 ## Google Cloud Run Deployment
 
@@ -444,19 +469,20 @@ gcloud config set project <PROJECT_ID>
 gcloud auth list
 gcloud config get-value project
 
-# 로컬 GEMINI_API_KEY는 Secret Manager secret이 아직 없을 때만 사용됩니다.
+# 로컬 secret은 Secret Manager secret이 아직 없을 때만 사용됩니다.
 $env:GEMINI_API_KEY="<LOCAL_SECRET>"
+$env:FACTORY_AGENT_API_KEY="<LOCAL_SECRET>"
 .\scripts\deploy_cloud_run.ps1
 ```
 
-Script는 필요한 API를 활성화하고 `asia-northeast3`의 `factory-agent` Artifact Registry repository, `factory-agent-runtime` runtime service account, `factory-agent-gemini-api-key` secret을 확인합니다. 없는 secret은 로컬 key가 있을 때만 생성하며 값은 source나 build config에 기록하지 않습니다. Runtime service account에는 해당 secret의 `roles/secretmanager.secretAccessor`만 부여합니다.
+Script는 필요한 API를 활성화하고 `asia-northeast3`의 `factory-agent` Artifact Registry repository, `factory-agent-runtime` runtime service account, `factory-agent-gemini-api-key`와 `factory-agent-api-key` secret을 확인합니다. 없는 secret은 대응하는 로컬 환경변수가 있을 때만 생성하며 값은 source나 build config에 기록하지 않습니다. Runtime service account에는 두 secret의 `roles/secretmanager.secretAccessor`만 부여합니다.
 
 Cloud Build를 직접 다시 실행하려면 활성화된 secret version과 Git SHA를 substitution으로 전달합니다.
 
 ```powershell
 $tag = (git rev-parse --short=12 HEAD).Trim()
 gcloud builds submit . --config=cloudbuild.yaml --region=asia-northeast3 `
-  --substitutions="_IMAGE_TAG=$tag,_SECRET_VERSION=<ENABLED_VERSION>"
+  --substitutions="_IMAGE_TAG=$tag,_SECRET_VERSION=<GEMINI_VERSION>,_API_SECRET_VERSION=<API_KEY_VERSION>"
 ```
 
 기본 Cloud Run 설정은 `2 CPU`, `4Gi memory`, `min-instances=0`, `max-instances=1`, `concurrency=1`, Uvicorn worker 1개입니다. `PORT`는 Cloud Run이 주입하며 애플리케이션이 `FACTORY_AGENT_PORT`보다 우선 사용합니다. Public access가 필요하면 인증과 권한 설계를 먼저 추가한 후 명시적으로 변경해야 합니다.
@@ -467,7 +493,11 @@ gcloud builds submit . --config=cloudbuild.yaml --region=asia-northeast3 `
 $url = gcloud run services describe factory-agent --region=asia-northeast3 --format="value(status.url)"
 $token = gcloud auth print-identity-token
 Invoke-RestMethod "$url/health" -Headers @{ Authorization = "Bearer $token" }
-Invoke-RestMethod "$url/incidents" -Headers @{ Authorization = "Bearer $token" }
+Invoke-RestMethod "$url/ready" -Headers @{ Authorization = "Bearer $token" }
+Invoke-RestMethod "$url/incidents" -Headers @{
+  Authorization = "Bearer $token"
+  "X-API-Key" = $env:FACTORY_AGENT_API_KEY
+}
 gcloud run services logs read factory-agent --region=asia-northeast3 --limit=50
 ```
 
@@ -479,5 +509,6 @@ Cloud Run, Artifact Registry, Cloud Build, Secret Manager는 비용이 발생할
 gcloud run services delete factory-agent --region=asia-northeast3
 gcloud artifacts repositories delete factory-agent --location=asia-northeast3
 gcloud secrets delete factory-agent-gemini-api-key
+gcloud secrets delete factory-agent-api-key
 gcloud iam service-accounts delete factory-agent-runtime@<PROJECT_ID>.iam.gserviceaccount.com
 ```

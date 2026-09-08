@@ -11,7 +11,7 @@ from backend import run
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 def _load_cloud_build() -> dict:
@@ -102,11 +102,15 @@ def test_cloud_run_deploy_uses_demo_safety_limits():
 def test_cloud_build_uses_secret_manager_without_plaintext_secret():
     source = (PROJECT_ROOT / "cloudbuild.yaml").read_text(encoding="utf-8")
     arguments = _deploy_arguments()
+    secret_argument = next(
+        argument for argument in arguments if argument.startswith("--set-secrets=")
+    )
 
     assert "AIza" not in source
+    assert "GEMINI_API_KEY=${_SECRET_NAME}:${_SECRET_VERSION}" in secret_argument
     assert (
-        "--set-secrets=GEMINI_API_KEY=${_SECRET_NAME}:${_SECRET_VERSION}"
-        in arguments
+        "FACTORY_AGENT_API_KEY=${_API_SECRET_NAME}:${_API_SECRET_VERSION}"
+        in secret_argument
     )
     assert not any(argument.startswith("--set-env-vars=GEMINI_API_KEY") for argument in arguments)
 
@@ -151,3 +155,5 @@ def test_deployment_helper_checks_prerequisites_and_required_apis():
     assert "secretmanager.googleapis.com" in source
     assert "roles/secretmanager.secretAccessor" in source
     assert "_SECRET_VERSION=$secretVersion" in source
+    assert "_API_SECRET_VERSION=$apiSecretVersion" in source
+    assert 'EnvironmentName "FACTORY_AGENT_API_KEY"' in source

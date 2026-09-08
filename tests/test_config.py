@@ -26,7 +26,7 @@ from backend.main import app
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +43,8 @@ def reset_cached_configuration():
 def test_settings_load_safe_defaults_without_secret():
     settings = AppSettings()
 
+    assert settings.factory_agent_api_key is None
+    assert settings.api_max_request_bytes == 1_048_576
     assert settings.gemini_api_key is None
     assert settings.gemini_model == "gemini-2.5-flash"
     assert settings.database_url == "sqlite:///./factoryops.db"
@@ -51,12 +53,15 @@ def test_settings_load_safe_defaults_without_secret():
 
 def test_settings_representation_masks_gemini_secret():
     settings = AppSettings(
+        factory_agent_api_key="factory-api-secret",
         gemini_api_key="do-not-log-this-secret",
         database_url="postgresql://user:password@db/app",
     )
 
     assert "do-not-log-this-secret" not in repr(settings)
     assert "do-not-log-this-secret" not in settings.model_dump_json()
+    assert "factory-api-secret" not in repr(settings)
+    assert "factory-api-secret" not in settings.model_dump_json()
     assert "postgresql://user:password@db/app" not in repr(settings)
 
 
@@ -64,12 +69,16 @@ def test_settings_environment_override(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("FACTORY_AGENT_PORT", "8100")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-test-model")
+    monkeypatch.setenv("FACTORY_AGENT_API_KEY", "configured-api-key")
+    monkeypatch.setenv("API_MAX_REQUEST_BYTES", "2097152")
 
     settings = get_settings()
 
     assert settings.app_env == "test"
     assert settings.factory_agent_port == 8100
     assert settings.gemini_model == "gemini-test-model"
+    assert settings.get_factory_agent_api_key() == "configured-api-key"
+    assert settings.api_max_request_bytes == 2_097_152
 
 
 @pytest.mark.parametrize(
@@ -81,6 +90,7 @@ def test_settings_environment_override(monkeypatch):
         ("CIRCUIT_FAILURE_THRESHOLD", "0"),
         ("CIRCUIT_RECOVERY_TIMEOUT_SECONDS", "0"),
         ("RETRIEVAL_TOP_K", "0"),
+        ("API_MAX_REQUEST_BYTES", "100"),
     ],
 )
 def test_invalid_runtime_settings_are_rejected(
@@ -232,6 +242,8 @@ def test_env_example_contains_placeholders_not_secret_values():
     )
 
     assert values["GEMINI_API_KEY"] == ""
+    assert values["FACTORY_AGENT_API_KEY"] == ""
+    assert values["API_MAX_REQUEST_BYTES"] == "1048576"
     assert values["DATABASE_URL"] == "sqlite:///./factoryops.db"
 
 
@@ -253,6 +265,8 @@ def test_compose_environment_names_match_settings():
 
     expected_names = {
         "GEMINI_API_KEY",
+        "FACTORY_AGENT_API_KEY",
+        "API_MAX_REQUEST_BYTES",
         "GEMINI_MODEL",
         "DATABASE_URL",
         "AGENT_MAX_STEPS",
